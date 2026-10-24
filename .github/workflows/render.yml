@@ -1,0 +1,160 @@
+name: Render video
+on:
+  workflow_dispatch:
+    inputs:
+      frame_rate:
+        description: 'Frame rate (30 for first test, 60 for smoother motion)'
+        required: true
+        type: choice
+        default: '30'
+        options: ['30', '60']
+permissions:
+  contents: read
+concurrency:
+  group: render-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare video project
+        run: |
+          cat > package.json <<'PACKAGE_JSON'
+          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render index.jsx Decagon out/decagon.mp4 --codec=h264 --crf=18 --concurrency=2"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
+          PACKAGE_JSON
+          cat > index.jsx <<'VIDEO_JSX'
+          import React from 'react';
+          import '@fontsource/noto-sans-sc/400.css';
+          import {AbsoluteFill, Composition, registerRoot, useCurrentFrame, useVideoConfig} from 'remotion';
+          
+          // 修改颜色、节奏与字号可从这里开始。几何长度均由尺规交点计算。
+          const THEME={background:'#0c1017',ink:'#e7ecf4',yellow:'#ffdf4d',blue:'#70cedc',muted:'#99a6ba'};
+          const O=[600,560], R=220;
+          const A=[O[0]+R,O[1]], B=[O[0]-R,O[1]], T=[O[0],O[1]-R];
+          const M=[O[0]+R/2,O[1]], MT=Math.sqrt(5)*R/2;
+          const N=[M[0]-MT,O[1]], SIDE=O[0]-N[0];
+          const angle=2*Math.asin(SIDE/(2*R));
+          const points=Array.from({length:10},(_,i)=>[O[0]+R*Math.cos(i*angle),O[1]-R*Math.sin(i*angle)]);
+          const clamp=(x)=>Math.max(0,Math.min(1,x));
+          const ease=(x)=>{x=clamp(x);return x*x*(3-2*x);};
+          const lerp=(a,b,p)=>a+(b-a)*p;
+          const at=(c,r,a)=>[c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)];
+          const bearing=(a,b)=>Math.atan2(b[1]-a[1],b[0]-a[0]);
+          const interval=(t,start,duration)=>ease((t-start)/duration);
+          const tx={fontFamily:'"Noto Sans CJK SC","Noto Sans SC",sans-serif',fill:THEME.ink};
+          
+          function Segment({a,b,p=1,color=THEME.ink,width=2,opacity=1}) {
+           if(p<=0)return null;
+           return <line x1={a[0]} y1={a[1]} x2={lerp(a[0],b[0],p)} y2={lerp(a[1],b[1],p)} stroke={color} strokeWidth={width} opacity={opacity} strokeLinecap="round"/>;
+          }
+功能点({p，标签，偏移量=[0，-21]，颜色=主题。墨迹，不透明度=1}){
+返回<g不透明度={opacity}><circle cx={p[0]}cy={p[1]}r={5}填充={color}/>{label&&<text x={p[0]+偏移量[0]}y={p[1]+偏移量[1]}textAnchor="middle"fontSize={26}fill={color}>{label}</text>}</g>；
+          }
+// 半径和弧线都由同一个帧进度驱动，拖动时间轴或云端并行渲染也保持同步。
+功能放样({center，radius，start=0，span=2*Math.Pi，t，开始，持续时间=2，颜色=主题。蓝色，不透明度=1，宽度=2.4}){
+if(t<begin)返回空值；
+Const进度=间隔(t，开始，持续时间)；
+常数扫描=跨度*进度；
+恒定终点=在(中心、半径、起点+扫掠)；
+常数起点=在(中心、半径、起点)；
+设d="；
+if(进度>0){
+            if(Math.abs(sweep)>=2*Math.PI-1e-7){
+const mid=在(中心、半径、起点+跨度/2)处；
+常数标志=span>0？1:0；
+D='M${startPoint}A${radius}${radius}01${flag}${mid}A${radius}${radius}01${flag}${startPoint}'；
+}else d='M${startPoint}A${radius}${radius}0${Math.abs(扫描)>Math.PI？1:0}${span>0？1:0}${end}'；
+           }
+Const radialOpacity=1-间期(t，开始+持续时间，0.22)；
+返回<g不透明度={opacity}>
+{d&&<路径d={d}fill="none"stroke={color}strokeWidth={width}strokeLinecap="round"/>}
+<g不透明度={radiusOpacity}><线段a={center}b={end}color={THEME.Blue}width={2}/><circle cx={end[0]}cy={end[1]}r={4}fill={THEME.blue}/><circle cx={center[0]}cy={center[1]}r={3}fill={THEME.blue}/></g>
+</g>；
+          }
+常数相位=[
+           [0,'画圆与直径','以O为圆心、OA为半径画圆'],
+           [4,'作垂直直径','以A、B为圆心，取AB为半径作交弧'],
+           [9,'平分半径OA','作 OA 的垂直平分线，得到中点 M'],
+           [14,'构造黄金分割长度','以M为圆心、MT为半径画圆，得到N'],
+           [20,'沿圆截取等弦','固定长度 ON，依次截取十个顶点'],
+           [35,'正十边形完成','十条等弦闭合，连接得到正十边形'],
+          ];
+          
+函数十边形(){
+Const frame=useCurrentFrame()，{FPS}=useVideoConfig()；
+Const t=帧/fps；
+常数相位=相位。过滤器(([开始])=>t>=start)。at(-1)；
+const phaseIndex=phases.indexOf(phase)；
+Const fadeAux=1-区间(t，34.6，1)；
+Const dim=1-0.76*区间(t，19，0.8)；
+常数定位=1+数组。从({长度：9}，(_，i)=>20+i*1。45+0.85)。过滤器(begin=>t>=begin)。长度；
+Const final=区间(t，35，1)；
+常数H=[O[0],O[1]-Math.sqrt(3)*R],K=[O[0],O[1]+Math.sqrt(3)*R];
+常数U=[米[0]，O[1]-math.sqrt(3)*R/2]，V=[米[0]，O[1]+Math.sqrt(3)*R/2]；
+return<AbsoluteFill样式={{背景颜色：主题.背景}}><svg宽度="1920"高度="1080"Viewbox="0019201080"风格={TX}>
+<文本x="960"y="100"textAnchor="中间"fontsize="44"字母间距="6">正十边形·尺规作图</text>
+<文本x="960"y="150"textAnchor="中间"fontsize="22"填满={主题.柔和的}>直尺和指南针结构</text>
+<扫描中心={O}半径={R}t={t}开始={0.6}持续时间={2.5}颜色={THEME.ink}宽度={3}不透明度={1-Final*0.6}/>
+<g不透明度={fadeAux*dim}>
+<段a={[B[0]-45,B[1]]}b={[A[0]+120,A[1]]}p={interval(t，3.2，0.7)}颜色={主题.柔和的}/>
+<点p={O}标签="O"抵消={[0，32]}/><点p={A}标签="A"抵消={[24，0]}/>
+{T>3.8&&<点p={B}标签="B"偏移={[-25，0]}/>}
+{[a、B].平面图((center，i)=>[H，K].map((目标，j)=><扫描key={'perp${i}${j}'}中心={中心}半径={2*R}开始={方位(中心，目标)-0.16}跨度={0.32}t={t}开始={4.5+(i*2+j)*0.65}持续时间={0.55}颜色={主题.柔和的}不透明度={1-interval(t，8，0.6)}/>))}
+<片段a={K}b={H}p={区间(t，7.3，0.8)}颜色={主题静音}/>
+             {T>=8.1&&<点p={T}标签="T"/>}
+{[O，A].平面标测图((中心，我)=>[U，V]。标测图((目标，J)=><扫描关键帧={'mid${i}${j}'}中心={中心}半径={R}开始={方位(中心，目标)-0.19}跨度={0.38}t={t}开始={9.3+(i*2+j)*0.65}持续时间={0.55}颜色={主题静音}不透明度={1-间隔(t，12.8，0.6)}/>))}
+<片段a={[V[0],V[1]+35]}b={[U[0],U[1]-35]}p={interval(t，12，0.7)}颜色={主题.柔和的}/>
+{T>=12.7&&<点p={米}标签="M"偏移={[0，34]}/>}
+<段a={米}b={T}p={区间(t，13，0.7)}颜色={主题蓝色}/>
+<扫描中心={米}半径={机器翻译}开始={轴承(M，T)}t={t}开始={14.6}持续时间={2.8}/>
+{T>=17.4&&<点p={N}标签="N"颜色={主题.黄色}/>}
+</g>
+<g不透明度={fadeAux}><线段a={O}b={N}p={区间(t，17.5，0.7)}颜色={主题黄色}宽度={5}不透明度={1-0.6*区间(t，19，0.8)}/></g>
+{Array.from({长度：10}，(_，i)=>{
+共nst中心=点[我]，目标=点[(i+1)%10]，开始=20+我*1.45；
+返回<g键={'步骤${i}'}>
+<扫描中心={中心}半径={一边}开始={方向(中心，目标)-0.27}跨度={0.54}t={t}开始={开始}持续时间={0.85}颜色={主题.蓝色}不透明度={fadeAux*(1-0.7*间隔(t，开始+1.05，0.25))}/>
+<线段a={中心}b={目标}p={区间(t，开始+0.85，0.45)}宽度={4}颜色={主题黄色}/>
+</g>；
+            })}
+{T>=20&&点。map((p，i)=>t>=20+(数学最大值(0，i-1))*1.45+(i===0？0:0)85)&&<关键点={'顶点${i}'}p={p}颜色={主题.黄色}/>)}
+{最终>0&&<多边形点数={points.map(p=>p.join('，')).加入(")}填满={主题.黄色}fillOpacity={0.07*最终}中风="无"/>}
+<行x1="1130"y1="235"x2="1130"y2="880"中风={他们。已静音}strokeOpacity="0.22"/>
+<g转换="翻译(1220280)">
+<文本字体大小="24"填满={主题.蓝色}>步骤{phaseIndex+1}/6</text>
+<文本y="64"fontsize="38"填满={phaseIndex==========5？主题。黄色：主题.墨水}>{阶段[1]}</text>
+{phaseIndex<=1？<g fontSize="27"填满={主题.柔和的}><文本y="145">给定半径R</text><text y="205">先构造两条垂直直径</text><text y="265">只使用直线与圆弧</text></g>：<g>
+<文本y="145"fontsize="30">OM=R/2</text>
+<文本y="205"fontsize="30">MT2=R2+(R/2)2</text>
+{T>=17.5&&<g不透明度={interval(t，17.5，0.6)}><文本y="285"fontsize="30">ON=MT-OM</text><text y="355"fontsize="34"填满={主题.黄色}>s=(√5-1)R/2</text></g>}
+</g>}}
+{t>=20&&t<35&&<g><text y="465"fontsize="23"填满={主题。柔和的}>已定位顶点</text><text y="535"fontsize="58"填满={主题.黄色}>{已定位}/10</text></g>}t>=20&&t<35&&<g><text y="465"fontsize="23"填满={主题.柔和的}>已定位顶点</text><text y="535"fontsize="58"填满={主题.黄色}>{已定位}/10</text></g>}
+{T>=35&&<g><text y="465"fontsize="30"圆心角：36°</text><text y="525"fontsize="30"内角：144°</text></g>}T>=35&&<g><text y="465"fontsize="30"圆心角：36°</text><text y="525"fontsize="30"内角：144°</text></g>}
+</g>
+<文本x="960"y="1020"textAnchor="中间"fontsize="30">{阶段[2]}</text>"960"y="1020"textAnchor="中间"fontsize="30">{阶段[2]}</text>
+</svg></AbsoluteFill>；
+          }
+Const Root=()=><Composition id="十边形"组件={十边形}宽度={1920}高度={1080}FPS={30}durationInFrames={40*30}/>；"十边形"组件={十边形}宽度={1920}高度={1080}FPS={30}durationInFrames={40*30}/>；
+registerRoot(根)；
+          
+video_JSX
+      - 姓名: 安装相依性姓名: 安装相依性
+跑：npm安装--no-audit-no-fund: npm安装--no-audit-no-fund
+      - 姓名: 安装浏览器姓名: 安装浏览器
+跑: npx远程浏览器确保: npx远程浏览器确保
+-姓名：渲染MP4姓名: 渲染MP4
+env：:
+video_FPS：${{inputs.frame_rate}}: ${{inputs.frame_rate}}
+跑：npx远程渲染索引。JSX十边形输出/十边形mp4-codec=h264-crf=18-concurrency=2-fps="$VIDEO_FPS"--持续时间="$((40*VIDEO_FPS))": JSX十边形输出/十边形mp4-codec=h264-crf=18-concurrency=2-fps="$VIDEO_FPS"--持续时间="$((40*VIDEO_FPS))"
+      - 姓名: 可下载视频姓名: 可下载视频
+uses：操作/上载工件@v4: 操作/上载工件@v4
+和……一起::
+姓名：十边形视频-${{inputs.frame_rate}}FPS: 十边形视频-${{inputs.frame_rate}}FPS
+路径：out/decagon.mp4: out/decagon.mp4
+保留天数: 3: 3
+如果未找到文件：误差
