@@ -1,4 +1,4 @@
-name: Render gears and crank
+name: Render disk slider
 on:
   workflow_dispatch:
     inputs:
@@ -25,31 +25,33 @@ jobs:
       - name: Prepare video project
         run: |
           cat > package.json <<'PACKAGE_JSON'
-          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render crank.jsx Crank out/crank.mp4 --codec=h264 --crf=18 --concurrency=2"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
+          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render disk_slider.jsx DiskSlider out/disk-slider.mp4 --codec=h264 --crf=18 --concurrency=2"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
           PACKAGE_JSON
-          cat > crank.jsx <<'VIDEO_JSX'
+          cat > disk_slider.jsx <<'VIDEO_JSX'
           import React from 'react';
           import '@fontsource/noto-sans-sc/400.css';
           import {Composition,registerRoot,useCurrentFrame,useVideoConfig} from 'remotion';
-          const K='#17212b',B='#276b9c';
+          const ink='#202a34',blue='#276b9c',gray='#89939e';
           
-          // 题目参数，单位 kg、m、s、N·m；圆盘、均匀杆，忽略摩擦与阻尼。
-          const P={m:1,r:0.20,g:9.8,M:0.50,theta0:40,phi0:20,wtheta0:0,wphi0:0,seconds:6};
-          // 两自由度质量矩阵 mr² [[33/2,-3],[-3,321/32]]。
-          // 小轮绝对自转角 ψ=3θ−2φ；重力势能 -4.5mgr cosθ - mgr cosφ/8。
+          // 物理参数，国际单位制；theta0 用度，omega0 用 rad/s。
+          const P={M:4,R:.50,m:1,k:80,l0:.20,kappa:2,r0:.20,rdot0:0,theta0:0,omega0:2,seconds:8};
+          const I=.5*P.M*P.R**2;
+          // m(r_dd-r*omega^2)=-k(r-l0)
+          // (I+m*r^2)*theta_dd+2*m*r*r_dot*omega=-kappa*theta
           function integrate(){
-           const a=16.5,b=-3,c=321/32,det=a*c-b*b,scale=P.m*P.r*P.r;
-           const count=Math.ceil(P.seconds/.001),dt=P.seconds/count;
+           if([P.M,P.R,P.m,P.k,P.l0,P.kappa,P.seconds].some(v=>!Number.isFinite(v)||v<=0))throw Error('Physical parameters must be finite and positive.');
+           const n=Math.ceil(P.seconds/.001),dt=P.seconds/n;
            const rhs=y=>{
-             const ft=P.M-4.5*P.m*P.g*P.r*Math.sin(y[0]);
-             const fp=-P.m*P.g*P.r*Math.sin(y[1])/8;
-             return [y[2],y[3],(c*ft-b*fp)/(scale*det),(-b*ft+a*fp)/(scale*det)];
+            const[r,u,theta,w]=y;
+            return [u,r*w*w-P.k/P.m*(r-P.l0),w,(-P.kappa*theta-2*P.m*r*u*w)/(I+P.m*r*r)];
            };
-           const add=(y,k,f)=>y.map((v,i)=>v+f*k[i]);
-           const states=[[P.theta0*Math.PI/180,P.phi0*Math.PI/180,P.wtheta0,P.wphi0]];
-           for(let i=0;i<count;i++){
-             const y=states[i],k1=rhs(y),k2=rhs(add(y,k1,dt/2)),k3=rhs(add(y,k2,dt/2)),k4=rhs(add(y,k3,dt));
-             states.push(y.map((v,j)=>v+dt*(k1[j]+2*k2[j]+2*k3[j]+k4[j])/6));
+           const add=(y,k,h)=>y.map((v,j)=>v+h*k[j]);
+           const states=[[P.r0,P.rdot0,P.theta0*Math.PI/180,P.omega0]];
+           for(let i=0;i<n;i++){
+            const y=states[i],a=rhs(y),b=rhs(add(y,a,dt/2)),c=rhs(add(y,b,dt/2)),d=rhs(add(y,c,dt));
+            const next=y.map((v,j)=>v+dt*(a[j]+2*b[j]+2*c[j]+d[j])/6);
+            if(next.some(v=>!Number.isFinite(v))||next[0]<=.025||next[0]>P.R-.055)throw Error('The slider reaches the slot boundary; change physical parameters or duration.');
+            states.push(next);
            }
            return {dt,states};
           }
@@ -59,109 +61,52 @@ jobs:
            const i=Math.min(solution.states.length-2,Math.floor(f)),u=Math.min(1,f-i);
            return solution.states[i].map((v,j)=>v*(1-u)+solution.states[i+1][j]*u);
           }
-          
-          function gearProfile(r,n){
-           const pressure=20*Math.PI/180,module=2*r/n;
-           const rb=r*Math.cos(pressure),ra=r+module,rf=r-1.25*module;
-           const invPitch=Math.tan(pressure)-pressure,half=Math.PI/(2*n);
-           const tmax=Math.sqrt((ra/rb)**2-1);
-           const flankOffset=t=>half+invPitch-(t-Math.atan(t));
-           const points=[],put=(rad,a)=>points.push([rad*Math.cos(a),rad*Math.sin(a)]);
-           const pitch=2*Math.PI/n;
-           for(let i=0;i<n;i++){
-             const center=i*pitch;
-             const base=flankOffset(0),tip=flankOffset(tmax);
-             // Root arc -> left involute -> tip arc -> right involute -> root arc.
-             for(let j=0;j<=6;j++)put(rf,center-pitch/2+(pitch/2-base)*j/6);
-             put(rb,center-base);
-             for(let j=1;j<=36;j++){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center-flankOffset(t));}
-             for(let j=1;j<=10;j++)put(ra,center-tip+2*tip*j/10);
-             for(let j=35;j>=0;j--){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center+flankOffset(t));}
-             put(rf,center+base);
-             for(let j=1;j<=6;j++)put(rf,center+base+(pitch/2-base)*j/6);
-           }
-           return points;
-          }
-          function rackProfile(){
-           const module=2*64/20,pitch=Math.PI*module,pressure=20*Math.PI/180;
-           const yPitch=605+64,root=yPitch+1.25*module,tip=yPitch-module;
-           const hw=pitch/4,wide=hw+1.25*module*Math.tan(pressure),narrow=hw-module*Math.tan(pressure);
-           const points=[[1090,root]];
-           // At zero angle a pinion tooth points down into a rack space.
-           for(let j=-8;j<=16;j++){
-            const c=1260+(j+.5)*pitch;
-            for(const p of [[c-wide,root],[c-narrow,tip],[c+narrow,tip],[c+wide,root]])points.push(p);
-           }
-           points.push([1660,703],[1090,703]);
-           return points;
-          }
-          const GEAR_CACHE=new Map();
-          function Gear({cx,cy,r,n,opacity=1}){
-           const key=r+':'+n;
-           if(!GEAR_CACHE.has(key))GEAR_CACHE.set(key,gearProfile(r,n).map(p=>p.join(',')).join(' '));
-           return <g transform={`translate(${cx} ${cy})`} opacity={opacity}>
-           <polygon points={GEAR_CACHE.get(key)} fill="none" stroke={K} strokeWidth="2" strokeLinejoin="round"/>
-           <circle r={r} fill="none" stroke={K} strokeWidth="0.8" strokeDasharray="8 7" strokeOpacity="0.5"/>
-           </g>;
-          }
-          const text=(x,y,s,size=26,extra={})=><text x={x} y={y} fontSize={size} fill={K} {...extra}>{s}</text>;
-          const line=(a,b,extra={})=><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={K} strokeWidth="2" strokeLinecap="round" {...extra}/>;
+          const text=(x,y,s,size=22,extra={})=><text x={x} y={y} fill={ink} fontSize={size} {...extra}>{s}</text>;
           function Diagram(){
            const frame=useCurrentFrame(),{fps}=useVideoConfig();
-           const videoTime=frame/fps,time=Math.min(P.seconds,Math.max(0,(videoTime-1.5)*P.seconds/21));
-           const [theta,phi]=sample(time),psi=3*theta-2*phi;
-           const O=[915,520],r=100,R=200;
-           const dir=a=>[Math.sin(a),Math.cos(a)];
-           const pos=(a,l)=>[O[0]+l*dir(a)[0],O[1]+l*dir(a)[1]];
-           const C1=pos(theta,3*r),C0=pos(phi,r/4),D=pos(theta,R),C=pos(theta,1.5*r);
-           const angleArc=(radius,a,color)=>{
-            const start=[O[0],O[1]+radius],end=pos(a,radius);
-            return <path d={`M ${start} A ${radius} ${radius} 0 0 ${a>=0?0:1} ${end}`} fill="none" stroke={color} strokeWidth="1.5"/>;
-           };
-           return <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
-           <defs><marker id="torquearrow" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0 L8 3.5 L0 7 Z" fill={B}/></marker></defs>
-           {text(960,72,'齿轮与曲柄',35,{textAnchor:'middle',fontWeight:500,letterSpacing:4})}
-           {text(960,108,'GEARS  /  CRANK',14,{textAnchor:'middle',fill:'#89929d',letterSpacing:4})}
-           {[[440,'物理时间',time.toFixed(2),'s'],[785,'曲柄转角 θ',(theta*180/Math.PI).toFixed(2),'°'],[1135,'大齿轮转角 φ',(phi*180/Math.PI).toFixed(2),'°'],[1480,'驱动力矩 M',P.M.toFixed(2),'N·m']].map(([x,label,value,unit])=><g key={label}>
-           {text(x,174,label,19,{textAnchor:'middle',fill:'#89929d'})}
-           <text x={x} y="222" textAnchor="middle" fill={B} fontSize="34">{value}<tspan dx="8" fontSize="17" fill="#647180">{unit}</tspan></text>
-           </g>)}
-           {text(960,270,`m = ${P.m} kg    ·    r = ${P.r.toFixed(2)} m    ·    R = 2r    ·    e = r/4`,17,{textAnchor:'middle',fill:'#89929d'})}
-           {/* Full mechanism: fixed bearing O, rotating large gear, orbiting small gear. */}
-           <g transform={`rotate(${-phi*180/Math.PI} ${O})`}><Gear cx={O[0]} cy={O[1]} r={R} n={48} opacity={.75}/></g>
-           <g transform={`rotate(${-psi*180/Math.PI+180/24} ${C1})`}><Gear cx={C1[0]} cy={C1[1]} r={r} n={24}/>
-           {line(C1,[C1[0]+r*.73,C1[1]],{stroke:B,strokeWidth:2})}
-           <circle cx={C1[0]+r*.73} cy={C1[1]} r="4" fill={B}/></g>
-           {line(O,[O[0],O[1]+R+63],{stroke:'#acb5bf',strokeWidth:1.2,strokeDasharray:'6 8'})}
-           {line(O,pos(phi,R*.80),{stroke:B,strokeWidth:1.6,strokeOpacity:.65})}
-           {line(O,C1,{strokeWidth:5})}
-           {line([O[0]-29,O[1]-32],[O[0]+29,O[1]-32],{strokeWidth:3})}
-           {line([O[0]-24,O[1]-31],O,{strokeWidth:2})}
-           {line([O[0]+24,O[1]-31],O,{strokeWidth:2})}
-           <circle cx={O[0]} cy={O[1]} r="7" fill="white" stroke={K} strokeWidth="2.5"/>
-           <circle cx={O[0]} cy={O[1]} r="2.5" fill={K}/>
-           <circle cx={C1[0]} cy={C1[1]} r="7" fill="white" stroke={K} strokeWidth="2.5"/>
-           <circle cx={C1[0]} cy={C1[1]} r="2.5" fill={K}/>
-           <circle cx={C0[0]} cy={C0[1]} r="5" fill={B}/>
-           <circle cx={C[0]} cy={C[1]} r="3" fill={K}/>
-           <circle cx={D[0]} cy={D[1]} r="3" fill={K}/>
-           {text(O[0]-51,O[1]+8,'C₂',22)}
-           {text(C1[0]+15,C1[1]+21,'C₁',22)}
-           {text(C[0]-22,C[1]+15,'C',20,{fill:'#647180'})}
-           {line(D,[D[0]+85*Math.cos(theta),D[1]-85*Math.sin(theta)],{stroke:'#89929d',strokeWidth:.8,strokeOpacity:.6})}
-           {text(D[0]+91*Math.cos(theta),D[1]-91*Math.sin(theta),'D',19,{fill:'#647180'})}
-           {line(C0,[C0[0]-90,C0[1]+64],{stroke:B,strokeWidth:1.1,strokeOpacity:.6})}
-           {text(C0[0]-163,C0[1]+86,'C₀ · m/2',21,{fill:B})}
-           {angleArc(54,phi,B)}
-           {angleArc(104,theta,'#647180')}
-           {text(pos(phi/2,75)[0],pos(phi/2,75)[1],'φ',21,{fill:B})}
-           {text(pos(theta/2,122)[0],pos(theta/2,122)[1],'θ',21,{fill:'#647180'})}
-           <path d={`M ${O[0]+66} ${O[1]-9} A 67 67 0 0 0 ${O[0]+15} ${O[1]-65}`} stroke={B} strokeWidth="1.8" fill="none" markerEnd="url(#torquearrow)"/>
-           {text(O[0]+77,O[1]-38,'M',23,{fill:B})}
-           {text(960,991,videoTime<1.5?'初始静止    ·    两自由度':'重力与恒定力偶驱动    ·    慢放 × 0.286',17,{textAnchor:'middle',fill:'#89929d'})}
+           const videoTime=frame/fps,t=Math.min(P.seconds,Math.max(0,(videoTime-1.5)*P.seconds/21));
+           const[r,u,theta,w]=sample(t);
+           const cx=960,cy=605,R=285,scale=R/P.R,blockX=cx+r*scale;
+           const point=(x,y)=>{const dx=x-cx,dy=y-cy;return [cx+dx*Math.cos(theta)+dy*Math.sin(theta),cy-dx*Math.sin(theta)+dy*Math.cos(theta)];};
+           const blockCentre=point(blockX,cy),kLabel=point((cx+blockX)/2,cy-42),rLabel=point((cx+blockX)/2,cy+100);
+           const coil=[[cx+15,cy],[cx+24,cy]],left=blockX-26;
+           for(let i=0;i<12;i++)coil.push([cx+28+i*(left-cx-38)/11,cy+(i%2?-9:9)]);
+           coil.push([left,cy]);
+           // In screen coordinates: positive physical rotation is counterclockwise.
+           const omegaPath=w>=0?`M${cx-164} ${cy-166} A233 233 0 0 0 ${cx-232} ${cy+20}`:`M${cx-232} ${cy+20} A233 233 0 0 1 ${cx-164} ${cy-166}`;
+           const torquePath=theta>=0?`M${cx-42} ${cy+40} A58 58 0 0 1 ${cx-42} ${cy-40}`:`M${cx-42} ${cy-40} A58 58 0 0 0 ${cx-42} ${cy+40}`;
+           return <svg width="1920" height="1080" viewBox="0 0 1920 1080" xmlns="http://www.w3.org/2000/svg" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
+           <defs><marker id="arrow" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0 L8 3.5 L0 7 Z" fill={blue}/></marker></defs>
+           {text(960,72,'转盘与径向滑块',35,{textAnchor:'middle',letterSpacing:3})}
+           {text(960,108,'二维等效示意 · 俯视',16,{textAnchor:'middle',fill:gray,letterSpacing:2})}
+           {[[440,'径向位置 r',r.toFixed(3),'m'],[785,'转盘转角 θ',(theta*180/Math.PI).toFixed(2),'°'],[1135,'角速度 ω',w.toFixed(2),'rad/s'],[1480,'物理时间 t',t.toFixed(2),'s']].map(([x,label,value,unit])=><g key={label}>{text(x,174,label,19,{textAnchor:'middle',fill:gray})}<text x={x} y="222" fill={blue} fontSize="34" textAnchor="middle">{value}<tspan dx="8" fontSize="17" fill="#647180">{unit}</tspan></text></g>)}
+           {text(960,267,`M = ${P.M} kg    ·    R = ${P.R.toFixed(2)} m    ·    m = ${P.m} kg    ·    k = ${P.k} N/m    ·    κ = ${P.kappa} N·m/rad`,17,{textAnchor:'middle',fill:gray})}
+           <circle cx={cx} cy={cy} r={R} stroke={ink} strokeWidth="2" fill="white"/>
+           {/* The groove, spring, slider and dimension line rotate with the disk. */}
+           <g transform={`rotate(${-theta*180/Math.PI} ${cx} ${cy})`}>
+            <path d={`M${cx+13} ${cy-30} H${cx+R-23} M${cx+13} ${cy+30} H${cx+R-23}`} fill="none" stroke="#adb7c1" strokeWidth="1.2"/>
+            <path d={`M${cx+R-23} ${cy-30} V${cy+30}`} stroke="#adb7c1" strokeWidth="1.2"/>
+            <polyline points={coil.map(p=>p.join(',')).join(' ')} stroke={ink} strokeWidth="2" fill="none" strokeLinejoin="round"/>
+            <rect x={blockX-26} y={cy-26} width="52" height="52" stroke={ink} strokeWidth="2" fill="white"/>
+            <path d={`M${cx} ${cy+66} V${cy+84} M${blockX} ${cy+66} V${cy+84} M${cx} ${cy+75} H${blockX}`} stroke={blue} strokeWidth="1.2" fill="none"/>
+           </g>
+           {/* Keep text upright while following the moving components. */}
+           {text(blockCentre[0],blockCentre[1]+8,'m',24,{textAnchor:'middle',fill:blue})}
+           {text(kLabel[0],kLabel[1],'k',22,{textAnchor:'middle',fill:blue})}
+           {text(rLabel[0],rLabel[1],'r',22,{textAnchor:'middle',fill:blue})}
+           <circle cx={cx} cy={cy} r="11" fill="white" stroke={ink} strokeWidth="2"/>
+           <circle cx={cx} cy={cy} r="3" fill={ink}/>
+           {text(cx-23,cy+27,'O',22)}
+           {/* An upper semicircle separates torque cues from the moving slot. */}
+           {Math.abs(theta)>.015&&<path d={torquePath} fill="none" stroke={blue} strokeWidth="1.6" opacity={Math.min(1,Math.abs(theta)*3)} markerEnd="url(#arrow)"/>}
+           {text(cx-92,cy-48,'−κθ',22,{fill:blue,textAnchor:'middle'})}
+           {Math.abs(w)>.015&&<path d={omegaPath} fill="none" stroke={blue} strokeWidth="1.6" opacity={Math.min(1,.25+Math.abs(w)*.4)} markerEnd="url(#arrow)"/>}
+           {text(cx-226,cy-125,'ω',24,{fill:blue})}
+           {text(960,981,'圆心轴固定 · 转盘可转动 · 滑块沿槽移动',17,{textAnchor:'middle',fill:gray})}
+           {text(960,1021,videoTime<1.5?'初始构型 · 轴下扭簧以回复力矩 −κθ 表示':'轴下扭簧以回复力矩 −κθ 表示 · 慢放 × 0.381',16,{textAnchor:'middle',fill:gray})}
            </svg>;
           }
-          registerRoot(()=> <Composition id="Crank" component={Diagram} width={1920} height={1080} fps={30} durationInFrames={24*30}/>);
+          registerRoot(()=> <Composition id="DiskSlider" component={Diagram} width={1920} height={1080} fps={30} durationInFrames={24*30}/>);
           VIDEO_JSX
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -170,11 +115,11 @@ jobs:
       - name: Render MP4
         env:
           VIDEO_FPS: ${{ inputs.frame_rate }}
-        run: npx remotion render crank.jsx Crank out/crank.mp4 --codec=h264 --crf=18 --concurrency=2 --fps="$VIDEO_FPS" --duration="$((24 * VIDEO_FPS))"
+        run: npx remotion render disk_slider.jsx DiskSlider out/disk-slider.mp4 --codec=h264 --crf=18 --concurrency=2 --fps="$VIDEO_FPS" --duration="$((24 * VIDEO_FPS))"
       - name: Downloadable video
         uses: actions/upload-artifact@v4
         with:
-          name: gears-crank-${{ inputs.frame_rate }}fps
-          path: out/crank.mp4
+          name: disk-slider-${{ inputs.frame_rate }}fps
+          path: out/disk-slider.mp4
           retention-days: 3
           if-no-files-found: error
