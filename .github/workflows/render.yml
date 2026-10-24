@@ -1,13 +1,13 @@
-name: Render disk slider 3D
+name: Render video
 on:
   workflow_dispatch:
     inputs:
       frame_rate:
-        description: 'Frame rate (30 for first test, 60 for smoother motion)'
+        description: 'Frame rate: 120 fps'
         required: true
         type: choice
-        default: '30'
-        options: ['30', '60']
+        default: '120'
+        options: ['120']
 permissions:
   contents: read
 concurrency:
@@ -16,7 +16,7 @@ concurrency:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,127 +25,123 @@ jobs:
       - name: Prepare video project
         run: |
           cat > package.json <<'PACKAGE_JSON'
-          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render disk_slider_3d.jsx DiskSlider3D out/disk-slider-3d.mp4 --codec=h264 --crf=18 --concurrency=2"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
+          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render index.jsx Decagon out/decagon.mp4 --codec=h264 --crf=18 --concurrency=1"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
           PACKAGE_JSON
-          cat > disk_slider_3d.jsx <<'VIDEO_JSX'
+          cat > index.jsx <<'VIDEO_JSX'
           import React from 'react';
           import '@fontsource/noto-sans-sc/400.css';
-          import {Composition,registerRoot,useCurrentFrame,useVideoConfig} from 'remotion';
-          const ink='#202a34',blue='#276b9c',gray='#89939e';
-          // 物理参数，国际单位制；theta0 用度，omega0 用 rad/s。
-          const P={M:4,R:.50,m:1,k:80,l0:.20,kappa:2,r0:.20,rdot0:0,theta0:0,omega0:2,seconds:8};
-          const I=.5*P.M*P.R**2;
-          // m(r_dd-r*omega^2)=-k(r-l0)
-          // (I+m*r^2)*theta_dd+2*m*r*r_dot*omega=-kappa*theta
-          function integrate(){
-           if([P.M,P.R,P.m,P.k,P.l0,P.kappa,P.seconds].some(v=>!Number.isFinite(v)||v<=0))throw Error('Physical parameters must be finite and positive.');
-           const n=Math.ceil(P.seconds/.001),dt=P.seconds/n;
-           const rhs=y=>{
-            const[r,u,theta,w]=y;
-            return [u,r*w*w-P.k/P.m*(r-P.l0),w,(-P.kappa*theta-2*P.m*r*u*w)/(I+P.m*r*r)];
-           };
-           const add=(y,k,h)=>y.map((v,j)=>v+h*k[j]);
-           const states=[[P.r0,P.rdot0,P.theta0*Math.PI/180,P.omega0]];
-           for(let i=0;i<n;i++){
-            const y=states[i],a=rhs(y),b=rhs(add(y,a,dt/2)),c=rhs(add(y,b,dt/2)),d=rhs(add(y,c,dt));
-            const next=y.map((v,j)=>v+dt*(a[j]+2*b[j]+2*c[j]+d[j])/6);
-            if(next.some(v=>!Number.isFinite(v))||next[0]<=.025||next[0]>P.R-.055)throw Error('The slider reaches the slot boundary; change physical parameters or duration.');
-            states.push(next);
-           }
-           return {dt,states};
-          }
-          const solution=integrate();
-          function sample(t){
-           const f=Math.max(0,Math.min(P.seconds,t))/solution.dt;
-           const i=Math.min(solution.states.length-2,Math.floor(f)),u=Math.min(1,f-i);
-           return solution.states[i].map((v,j)=>v*(1-u)+solution.states[i+1][j]*u);
-          }
-          const beta=35*Math.PI/180,elev=22*Math.PI/180,S=800;
-          const project=([x,y,z])=>[960+S*(Math.cos(beta)*x-Math.sin(beta)*y),460+S*(Math.sin(beta)*Math.sin(elev)*x+Math.cos(beta)*Math.sin(elev)*y-Math.cos(elev)*z)];
-          const p=(x,y,z)=>project([x,y,z]);
-          const path=(points,close=false)=>'M '+points.map(pt=>pt.join(',')).join(' L ')+(close?' Z':'');
-          const circle=(r,z,start=0,end=2*Math.PI,n=150)=>Array.from({length:n+1},(_,i)=>{const a=start+(end-start)*i/n;return p(r*Math.cos(a),r*Math.sin(a),z);});
-          const line=(a,b,props={})=><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={ink} strokeWidth="1.8" strokeLinecap="round" {...props}/>;
-          const text=(x,y,s,size=22,props={})=><text x={x} y={y} fill={ink} fontSize={size} {...props}>{s}</text>;
-          function Cylinder({r,top,bottom,color='white',width=1.8}){
-           const a=-beta,b=Math.PI-beta;
-           const side=[...circle(r,top,a,b,80),...circle(r,bottom,b,a,80)];
-           return <g><path d={path(side,true)} fill="#f5f7f9" stroke={ink} strokeWidth={width}/><path d={path(circle(r,top),true)} fill={color} stroke={ink} strokeWidth={width}/></g>;
-          }
+          import {AbsoluteFill, Composition, registerRoot, useCurrentFrame, useVideoConfig} from 'remotion';
           
-          // Local radial coordinates rotate with the disk. World geometry is projected
-          // orthographically. Solids and coil back/front strokes preserve depth order.
-          function turn([x,y,z],theta){return [x*Math.cos(theta)-y*Math.sin(theta),x*Math.sin(theta)+y*Math.cos(theta),z];}
-          function Box({r,theta}){
-           const x0=r-.045,x1=r+.045,y0=-.045,y1=.045,z0=.005,z1=.083;
-           const faces=[
-           {normal:[0,1,0],v:[[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]],fill:'#f1f4f7'},
-           {normal:[0,-1,0],v:[[x1,y0,z0],[x0,y0,z0],[x0,y0,z1],[x1,y0,z1]],fill:'#f1f4f7'},
-           {normal:[1,0,0],v:[[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]],fill:'#f8fafb'},
-           {normal:[-1,0,0],v:[[x0,y1,z0],[x0,y0,z0],[x0,y0,z1],[x0,y1,z1]],fill:'#f8fafb'},
-           {normal:[0,0,1],v:[[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]],fill:'white'}];
-           const view=[Math.sin(beta)*Math.cos(elev),Math.cos(beta)*Math.cos(elev),Math.sin(elev)];
-           return <g>{faces.filter(f=>{const n=turn(f.normal,theta);return n.reduce((a,v,i)=>a+v*view[i],0)>1e-8;}).map((f,i)=><path key={i} d={path(f.v.map(v=>project(turn(v,theta))),true)} stroke={ink} strokeWidth="1.8" fill={f.fill}/>)}</g>;
+          // 修改颜色、节奏与字号可从这里开始。几何长度均由尺规交点计算。
+          const THEME={background:'#0c1017',ink:'#e7ecf4',yellow:'#ffdf4d',blue:'#70cedc',muted:'#99a6ba'};
+          const O=[600,560], R=220;
+          const A=[O[0]+R,O[1]], B=[O[0]-R,O[1]], T=[O[0],O[1]-R];
+          const M=[O[0]+R/2,O[1]], MT=Math.sqrt(5)*R/2;
+          const N=[M[0]-MT,O[1]], SIDE=O[0]-N[0];
+          const angle=2*Math.asin(SIDE/(2*R));
+          const points=Array.from({length:10},(_,i)=>[O[0]+R*Math.cos(i*angle),O[1]-R*Math.sin(i*angle)]);
+          const clamp=(x)=>Math.max(0,Math.min(1,x));
+          const ease=(x)=>{x=clamp(x);return x*x*(3-2*x);};
+          const lerp=(a,b,p)=>a+(b-a)*p;
+          const at=(c,r,a)=>[c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)];
+          const bearing=(a,b)=>Math.atan2(b[1]-a[1],b[0]-a[0]);
+          const interval=(t,start,duration)=>ease((t-start)/duration);
+          const tx={fontFamily:'"Noto Sans CJK SC","Noto Sans SC",sans-serif',fill:THEME.ink};
+          
+          function Segment({a,b,p=1,color=THEME.ink,width=2,opacity=1}) {
+           if(p<=0)return null;
+           return <line x1={a[0]} y1={a[1]} x2={lerp(a[0],b[0],p)} y2={lerp(a[1],b[1],p)} stroke={color} strokeWidth={width} opacity={opacity} strokeLinecap="round"/>;
           }
-          function Scene(){
-           const frame=useCurrentFrame(),{fps}=useVideoConfig();
-           const videoTime=frame/fps,t=Math.min(P.seconds,Math.max(0,(videoTime-1.5)*P.seconds/21));
-           const[r,u,theta,w]=sample(t);
-           const q=(x,y,z)=>project(turn([x,y,z],theta));
-           // One torsion-spring end rotates with the collar, the other stays fixed.
-           const coil=[];
-           for(let i=0;i<=500;i++){
-            const f=i/500,a=theta*(1-f)+2*Math.PI*4.5*f,z=-.30-.19*f;
-            coil.push({q:p(.064*Math.cos(a),.064*Math.sin(a),z),front:Math.sin(beta)*Math.cos(a)+Math.cos(beta)*Math.sin(a)>0});
+          function Dot({p,label,offset=[0,-21],color=THEME.ink,opacity=1}){
+           return <g opacity={opacity}><circle cx={p[0]} cy={p[1]} r={5} fill={color}/>{label&&<text x={p[0]+offset[0]} y={p[1]+offset[1]} textAnchor="middle" fontSize={26} fill={color}>{label}</text>}</g>;
+          }
+          // 半径和弧线都由同一个帧进度驱动，拖动时间轴或云端并行渲染也保持同步。
+          function Sweep({center,radius,start=0,span=2*Math.PI,t,begin,duration=2,color=THEME.blue,opacity=1,width=2.4}){
+           if(t<begin)return null;
+           const progress=interval(t,begin,duration);
+           const sweep=span*progress;
+           const end=at(center,radius,start+sweep);
+           const startPoint=at(center,radius,start);
+           let d='';
+           if(progress>0){
+            if(Math.abs(sweep)>=2*Math.PI-1e-7){
+             const mid=at(center,radius,start+span/2);
+             const flag=span>0?1:0;
+             d=`M ${startPoint} A ${radius} ${radius} 0 1 ${flag} ${mid} A ${radius} ${radius} 0 1 ${flag} ${startPoint}`;
+            }else d=`M ${startPoint} A ${radius} ${radius} 0 ${Math.abs(sweep)>Math.PI?1:0} ${span>0?1:0} ${end}`;
            }
-           const segments=front=>coil.slice(1).map((v,i)=>v.front===front?<path key={i} d={path([coil[i].q,v.q])} fill="none" stroke={ink} strokeWidth="2.4" strokeLinecap="round"/>:null);
-           const spring=[q(.022,0,.025),q(.039,0,.025)],face=r-.045;
-           for(let i=0;i<=140;i++){const a=2*Math.PI*5*i/140;spring.push(q(.045+(face-.054)*i/140,.015*Math.cos(a),.025+.015*Math.sin(a)));}
-           spring.push(q(face,0,.025));
-           const slot=[[.015,-.038,.001],[P.R-.035,-.038,.001],[P.R-.035,.038,.001],[.015,.038,.001]].map(v=>project(turn(v,theta)));
-           const radiusA=q(0,.13,.006),radiusB=q(r,.13,.006);
-           const kpoint=q((face+.022)/2,-.007,.039),kapoint=p(.064,0,-.40),massLabel=q(r,0,.088);
-           const rotArrow=w>=0?circle(.36,.007,2.6,3.65,60):circle(.36,.007,3.65,2.6,60);
-           return <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
-           <defs><marker id="blueArrow" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0 L8 3.5 L0 7 Z" fill={blue}/></marker><marker id="dimArrow" markerWidth="6" markerHeight="5" refX="3" refY="2.5" orient="auto-start-reverse"><path d="M6 0 L0 2.5 L6 5" fill="none" stroke={blue} strokeWidth="1"/></marker></defs>
-           {text(960,72,'转盘上的径向振动',35,{textAnchor:'middle',letterSpacing:3})}
-           {text(960,108,'ROTATING DISK  /  RADIAL SLIDER',14,{textAnchor:'middle',fill:gray,letterSpacing:3})}
-           {[[430,'物理时间',t.toFixed(2),'s'],[785,'径向位置 r',r.toFixed(3),'m'],[1135,'转盘转角 θ',(theta*180/Math.PI).toFixed(2),'°'],[1480,'角速度 ω',w.toFixed(2),'rad/s']].map(([x,label,value,unit])=><g key={label}>{text(x,174,label,19,{textAnchor:'middle',fill:gray})}<text x={x} y="222" fill={blue} fontSize="34" textAnchor="middle">{value}<tspan dx="8" fontSize="17" fill="#647180">{unit}</tspan></text></g>)}
-           {text(960,267,`M = ${P.M} kg    ·    m = ${P.m} kg    ·    k = ${P.k} N/m    ·    κ = ${P.kappa} N·m/rad`,17,{textAnchor:'middle',fill:gray})}
-           <Cylinder r={.23} top={-.55} bottom={-.60}/>
-           {line(p(-.16,0,-.55),p(-.16,0,-.49),{strokeWidth:4})}
-           {segments(false)}
-           <Cylinder r={.017} top={-.21} bottom={-.55}/>
-           {segments(true)}
-           {/* Top spring leg attaches to rotating shaft; bottom leg to the fixed post. */}
-           {line(q(.064,0,-.30),q(.017,0,-.30),{strokeWidth:2.3})}
-           {line(p(-.064,0,-.49),p(-.16,0,-.49),{strokeWidth:2.3})}
-           <Cylinder r={.036} top={-.28} bottom={-.30}/>
-           {line(q(.017,0,-.278),q(.035,0,-.278),{stroke:blue,strokeWidth:2})}
-           {/* Draw the opaque disk after the hidden upper shaft. */}
-           <Cylinder r={P.R} top={0} bottom={-.055}/>
-           <path d={path(slot,true)} fill="#edf1f5" stroke={ink} strokeWidth="1.3"/>
-           {line(q(.015,.027,-.004),q(P.R-.035,.027,-.004),{stroke:'#aab4bf',strokeWidth:1})}
-           <path d={path(spring)} fill="none" stroke={ink} strokeWidth="2" strokeLinejoin="round"/>
-           <Box r={r} theta={theta}/>
-           <circle cx={p(0,0,.006)[0]} cy={p(0,0,.006)[1]} r="4" fill={blue}/>
-           {text(p(0,0,.006)[0]-25,p(0,0,.006)[1]-10,'O',22)}
-           {text(massLabel[0],massLabel[1]+7,'m',22,{textAnchor:'middle',fill:blue})}
-           {line(radiusA,radiusB,{stroke:blue,strokeWidth:1.2,markerStart:'url(#dimArrow)',markerEnd:'url(#dimArrow)'})}
-           {line(q(0,0,.006),q(0,.145,.006),{stroke:blue,strokeWidth:1})}
-           {line(q(r,.045,.006),q(r,.145,.006),{stroke:blue,strokeWidth:1})}
-           {text((radiusA[0]+radiusB[0])/2,(radiusA[1]+radiusB[1])/2-10,'r',22,{fill:blue,textAnchor:'middle'})}
-           {Math.abs(w)>.015&&<path d={path(rotArrow)} fill="none" stroke={blue} strokeWidth="1.8" opacity={Math.min(1,.25+Math.abs(w)*.4)} markerEnd="url(#blueArrow)"/>}
-           {text(p(.36*Math.cos(3.15),.36*Math.sin(3.15),.007)[0]-33,p(.36*Math.cos(3.15),.36*Math.sin(3.15),.007)[1]-13,'ω',24,{fill:blue})}
-           {line(kpoint,[kpoint[0]-10,kpoint[1]-54],{stroke:'#8e9aa6',strokeWidth:1})}
-           {text(kpoint[0]-10,kpoint[1]-65,'k',23,{fill:blue,textAnchor:'middle'})}
-           {line(kapoint,[kapoint[0]+100,kapoint[1]-3],{stroke:'#8e9aa6',strokeWidth:1})}
-           {text(kapoint[0]+113,kapoint[1]+4,'扭转弹簧 κ',21,{fill:blue})}
-           {text(960,989,'固定底座',18,{textAnchor:'middle',fill:gray})}
-           {text(960,1020,videoTime<1.5?'初始构型 · 滑块按质点建模 · 两自由度':'三维线稿 · 无摩擦、无阻尼 · 慢放 × 0.381',17,{textAnchor:'middle',fill:gray})}
-           </svg>;
+           const radialOpacity=1-interval(t,begin+duration,0.22);
+           return <g opacity={opacity}>
+            {d&&<path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round"/>}
+            <g opacity={radialOpacity}><Segment a={center} b={end} color={THEME.blue} width={2}/><circle cx={end[0]} cy={end[1]} r={4} fill={THEME.blue}/><circle cx={center[0]} cy={center[1]} r={3} fill={THEME.blue}/></g>
+           </g>;
           }
-          registerRoot(()=> <Composition id="DiskSlider3D" component={Scene} width={1920} height={1080} fps={30} durationInFrames={24*30}/>);
+          const phases=[
+           [0,'画圆与直径','以 O 为圆心、OA 为半径画圆'],
+           [4,'作垂直直径','以 A、B 为圆心，取 AB 为半径作交弧'],
+           [9,'平分半径 OA','作 OA 的垂直平分线，得到中点 M'],
+           [14,'构造黄金分割长度','以 M 为圆心、MT 为半径画圆，得到 N'],
+           [20,'沿圆截取等弦','固定长度 ON，依次截取十个顶点'],
+           [35,'正十边形完成','十条等弦闭合，连接得到正十边形'],
+          ];
+          
+          function Decagon(){
+           const frame=useCurrentFrame(),{fps}=useVideoConfig();
+           const t=frame/fps;
+           const phase=phases.filter(([start])=>t>=start).at(-1);
+           const phaseIndex=phases.indexOf(phase);
+           const fadeAux=1-interval(t,34.6,1);
+           const dim=1-0.76*interval(t,19,0.8);
+           const located=1+Array.from({length:9},(_,i)=>20+i*1.45+0.85).filter(begin=>t>=begin).length;
+           const final=interval(t,35,1);
+           const H=[O[0],O[1]-Math.sqrt(3)*R],K=[O[0],O[1]+Math.sqrt(3)*R];
+           const U=[M[0],O[1]-Math.sqrt(3)*R/2],V=[M[0],O[1]+Math.sqrt(3)*R/2];
+           return <AbsoluteFill style={{backgroundColor:THEME.background}}><svg width="3840" height="2160" viewBox="0 0 1920 1080" style={tx}>
+            <text x="960" y="100" textAnchor="middle" fontSize="44" letterSpacing="6">正十边形 · 尺规作图</text>
+            <text x="960" y="150" textAnchor="middle" fontSize="22" fill={THEME.muted}>STRAIGHTEDGE &amp; COMPASS CONSTRUCTION</text>
+            <Sweep center={O} radius={R} t={t} begin={0.6} duration={2.5} color={THEME.ink} width={3} opacity={1-final*0.6}/>
+            <g opacity={fadeAux*dim}>
+             <Segment a={[B[0]-45,B[1]]} b={[A[0]+120,A[1]]} p={interval(t,3.2,0.7)} color={THEME.muted}/>
+             <Dot p={O} label="O" offset={[0,32]}/><Dot p={A} label="A" offset={[24,0]}/>
+             {t>3.8&&<Dot p={B} label="B" offset={[-25,0]}/>}
+             {[A,B].flatMap((center,i)=>[H,K].map((target,j)=><Sweep key={`perp${i}${j}`} center={center} radius={2*R} start={bearing(center,target)-0.16} span={0.32} t={t} begin={4.5+(i*2+j)*0.65} duration={0.55} color={THEME.muted} opacity={1-interval(t,8,0.6)}/>))}
+             <Segment a={K} b={H} p={interval(t,7.3,0.8)} color={THEME.muted}/>
+             {t>=8.1&&<Dot p={T} label="T"/>}
+             {[O,A].flatMap((center,i)=>[U,V].map((target,j)=><Sweep key={`mid${i}${j}`} center={center} radius={R} start={bearing(center,target)-0.19} span={0.38} t={t} begin={9.3+(i*2+j)*0.65} duration={0.55} color={THEME.muted} opacity={1-interval(t,12.8,0.6)}/>))}
+             <Segment a={[V[0],V[1]+35]} b={[U[0],U[1]-35]} p={interval(t,12,0.7)} color={THEME.muted}/>
+             {t>=12.7&&<Dot p={M} label="M" offset={[0,34]}/>}
+             <Segment a={M} b={T} p={interval(t,13,0.7)} color={THEME.blue}/>
+             <Sweep center={M} radius={MT} start={bearing(M,T)} t={t} begin={14.6} duration={2.8}/>
+             {t>=17.4&&<Dot p={N} label="N" color={THEME.yellow}/>}
+            </g>
+            <g opacity={fadeAux}><Segment a={O} b={N} p={interval(t,17.5,0.7)} color={THEME.yellow} width={5} opacity={1-0.6*interval(t,19,0.8)}/></g>
+            {Array.from({length:10},(_,i)=>{
+              const center=points[i],target=points[(i+1)%10],begin=20+i*1.45;
+              return <g key={`step${i}`}>
+               <Sweep center={center} radius={SIDE} start={bearing(center,target)-0.27} span={0.54} t={t} begin={begin} duration={0.85} color={THEME.blue} opacity={fadeAux*(1-0.7*interval(t,begin+1.05,0.25))}/>
+               <Segment a={center} b={target} p={interval(t,begin+0.85,0.45)} width={4} color={THEME.yellow}/>
+              </g>;
+            })}
+            {t>=20&&points.map((p,i)=>t>=20+(Math.max(0,i-1))*1.45+(i===0?0:0.85)&&<Dot key={`vertex${i}`} p={p} color={THEME.yellow}/>)}
+            {final>0&&<polygon points={points.map(p=>p.join(',')).join(' ')} fill={THEME.yellow} fillOpacity={0.07*final} stroke="none"/>}
+            <line x1="1130" y1="235" x2="1130" y2="880" stroke={THEME.muted} strokeOpacity="0.22"/>
+            <g transform="translate(1220 280)">
+             <text fontSize="24" fill={THEME.blue}>STEP {phaseIndex+1} / 6</text>
+             <text y="64" fontSize="38" fill={phaseIndex===5?THEME.yellow:THEME.ink}>{phase[1]}</text>
+             {phaseIndex<=1?<g fontSize="27" fill={THEME.muted}><text y="145">给定半径 R</text><text y="205">先构造两条垂直直径</text><text y="265">只使用直线与圆弧</text></g>:<g>
+              <text y="145" fontSize="30">OM = R / 2</text>
+              <text y="205" fontSize="30">MT² = R² + (R / 2)²</text>
+              {t>=17.5&&<g opacity={interval(t,17.5,0.6)}><text y="285" fontSize="30">ON = MT − OM</text><text y="355" fontSize="34" fill={THEME.yellow}>s = (√5 − 1)R / 2</text></g>}
+             </g>}
+             {t>=20&&t<35&&<g><text y="465" fontSize="23" fill={THEME.muted}>已定位顶点</text><text y="535" fontSize="58" fill={THEME.yellow}>{located} / 10</text></g>}
+             {t>=35&&<g><text y="465" fontSize="30">圆心角：36°</text><text y="525" fontSize="30">内角：144°</text></g>}
+            </g>
+            <text x="960" y="1020" textAnchor="middle" fontSize="30">{phase[2]}</text>
+           </svg></AbsoluteFill>;
+          }
+          const Root=()=> <Composition id="Decagon" component={Decagon} width={3840} height={2160} fps={120} durationInFrames={40*120}/>;
+          registerRoot(Root);
+          
           VIDEO_JSX
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -154,11 +150,11 @@ jobs:
       - name: Render MP4
         env:
           VIDEO_FPS: ${{ inputs.frame_rate }}
-        run: npx remotion render disk_slider_3d.jsx DiskSlider3D out/disk-slider-3d.mp4 --codec=h264 --crf=18 --concurrency=2 --fps="$VIDEO_FPS" --duration="$((24 * VIDEO_FPS))"
+        run: npx remotion render index.jsx Decagon out/decagon.mp4 --codec=h264 --crf=18 --concurrency=1 --fps="$VIDEO_FPS" --duration="$((40 * VIDEO_FPS))"
       - name: Downloadable video
         uses: actions/upload-artifact@v4
         with:
-          name: disk-slider-3d-${{ inputs.frame_rate }}fps
-          path: out/disk-slider-3d.mp4
+          name: decagon-video-4k-${{ inputs.frame_rate }}fps
+          path: out/decagon.mp4
           retention-days: 3
           if-no-files-found: error
