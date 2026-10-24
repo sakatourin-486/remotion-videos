@@ -1,4 +1,4 @@
-name: Render video
+name: Render mechanics animation
 on:
   workflow_dispatch:
     inputs:
@@ -25,123 +25,146 @@ jobs:
       - name: Prepare video project
         run: |
           cat > package.json <<'PACKAGE_JSON'
-          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render index.jsx Decagon out/decagon.mp4 --codec=h264 --crf=18 --concurrency=1"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
+          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render mechanics.jsx Mechanics out/mechanics.mp4 --codec=h264 --crf=18 --concurrency=1"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
           PACKAGE_JSON
-          cat > index.jsx <<'VIDEO_JSX'
+          cat > mechanics.jsx <<'VIDEO_JSX'
           import React from 'react';
           import '@fontsource/noto-sans-sc/400.css';
-          import {AbsoluteFill, Composition, registerRoot, useCurrentFrame, useVideoConfig} from 'remotion';
+          import {Composition,registerRoot,useCurrentFrame,useVideoConfig} from 'remotion';
+          const K='#17212b',B='#276b9c';
           
-          // 修改颜色、节奏与字号可从这里开始。几何长度均由尺规交点计算。
-          const THEME={background:'#0c1017',ink:'#e7ecf4',yellow:'#ffdf4d',blue:'#70cedc',muted:'#99a6ba'};
-          const O=[600,560], R=220;
-          const A=[O[0]+R,O[1]], B=[O[0]-R,O[1]], T=[O[0],O[1]-R];
-          const M=[O[0]+R/2,O[1]], MT=Math.sqrt(5)*R/2;
-          const N=[M[0]-MT,O[1]], SIDE=O[0]-N[0];
-          const angle=2*Math.asin(SIDE/(2*R));
-          const points=Array.from({length:10},(_,i)=>[O[0]+R*Math.cos(i*angle),O[1]-R*Math.sin(i*angle)]);
-          const clamp=(x)=>Math.max(0,Math.min(1,x));
-          const ease=(x)=>{x=clamp(x);return x*x*(3-2*x);};
-          const lerp=(a,b,p)=>a+(b-a)*p;
-          const at=(c,r,a)=>[c[0]+r*Math.cos(a),c[1]+r*Math.sin(a)];
-          const bearing=(a,b)=>Math.atan2(b[1]-a[1],b[0]-a[0]);
-          const interval=(t,start,duration)=>ease((t-start)/duration);
-          const tx={fontFamily:'"Noto Sans CJK SC","Noto Sans SC",sans-serif',fill:THEME.ink};
+          // 可调物理参数。国际单位制：kg、m、s、N、Pa。
+          const P={JA:0.08,J1:0.02,J2:0.12,m:10,k:5000,r1:0.05,r2:0.10,a:0.04,L:0.8,d:0.010,G:80e9,M0:1};
+          const kt=P.G*Math.PI*P.d**4/(32*P.L);
+          const ratio=P.r1/P.r2;
+          const je=P.J1+ratio**2*(P.J2+P.m*P.a**2);
+          const ke=P.k*(P.a*ratio)**2;
+          // 质量归一化的二阶系统：精确模态叠加，无时间积分漂移。
+          const aa=kt/P.JA,bb=-kt/Math.sqrt(P.JA*je),dd=(kt+ke)/je;
+          const disc=Math.hypot(aa-dd,2*bb);
+          const eig=[(aa+dd+disc)/2,(aa+dd-disc)/2];
+          const alpha=.5*Math.atan2(2*bb,aa-dd);
+          const modes=[[Math.cos(alpha),Math.sin(alpha)],[-Math.sin(alpha),Math.cos(alpha)]];
+          function response(time){
+           let qa=0,q1=0,wa=0,w1=0,accA=0,acc1=0;
+           modes.forEach((u,i)=>{
+             const w=Math.sqrt(eig[i]);
+             const c=u[0]*P.M0/Math.sqrt(P.JA)/eig[i];
+             const q=c*(1-Math.cos(w*time)),v=c*w*Math.sin(w*time),acc=c*eig[i]*Math.cos(w*time);
+             qa+=u[0]*q/Math.sqrt(P.JA);q1+=u[1]*q/Math.sqrt(je);
+             wa+=u[0]*v/Math.sqrt(P.JA);w1+=u[1]*v/Math.sqrt(je);
+             accA+=u[0]*acc/Math.sqrt(P.JA);acc1+=u[1]*acc/Math.sqrt(je);
+           });
+           const q2=-ratio*q1,x=P.a*q2,torque=kt*(qa-q1);
+           return {qa,q1,q2,x,torque,stress:16*Math.abs(torque)/(Math.PI*P.d**3)/1e6,wa,w1,accA,acc1};
+          }
           
-          function Segment({a,b,p=1,color=THEME.ink,width=2,opacity=1}) {
-           if(p<=0)return null;
-           return <line x1={a[0]} y1={a[1]} x2={lerp(a[0],b[0],p)} y2={lerp(a[1],b[1],p)} stroke={color} strokeWidth={width} opacity={opacity} strokeLinecap="round"/>;
-          }
-          function Dot({p,label,offset=[0,-21],color=THEME.ink,opacity=1}){
-           return <g opacity={opacity}><circle cx={p[0]} cy={p[1]} r={5} fill={color}/>{label&&<text x={p[0]+offset[0]} y={p[1]+offset[1]} textAnchor="middle" fontSize={26} fill={color}>{label}</text>}</g>;
-          }
-          // 半径和弧线都由同一个帧进度驱动，拖动时间轴或云端并行渲染也保持同步。
-          function Sweep({center,radius,start=0,span=2*Math.PI,t,begin,duration=2,color=THEME.blue,opacity=1,width=2.4}){
-           if(t<begin)return null;
-           const progress=interval(t,begin,duration);
-           const sweep=span*progress;
-           const end=at(center,radius,start+sweep);
-           const startPoint=at(center,radius,start);
-           let d='';
-           if(progress>0){
-            if(Math.abs(sweep)>=2*Math.PI-1e-7){
-             const mid=at(center,radius,start+span/2);
-             const flag=span>0?1:0;
-             d=`M ${startPoint} A ${radius} ${radius} 0 1 ${flag} ${mid} A ${radius} ${radius} 0 1 ${flag} ${startPoint}`;
-            }else d=`M ${startPoint} A ${radius} ${radius} 0 ${Math.abs(sweep)>Math.PI?1:0} ${span>0?1:0} ${end}`;
+          const text=(x,y,s,size=28,extra={})=><text x={x} y={y} fontSize={size} fill={K} {...extra}>{s}</text>;
+          const line=(x1,y1,x2,y2,extra={})=><line x1={x1} y1={y1} x2={x2} y2={y2} stroke={K} strokeWidth="3" {...extra}/>;
+          // Standard 20-degree involute flanks; root transitions remain schematic.
+          function gearProfile(r,n){
+           const pressure=20*Math.PI/180,module=2*r/n;
+           const rb=r*Math.cos(pressure),ra=r+module,rf=r-1.25*module;
+           const invPitch=Math.tan(pressure)-pressure,half=Math.PI/(2*n);
+           const tmax=Math.sqrt((ra/rb)**2-1);
+           const flankOffset=t=>half+invPitch-(t-Math.atan(t));
+           const points=[],put=(rad,a)=>points.push([rad*Math.cos(a),rad*Math.sin(a)]);
+           const pitch=2*Math.PI/n;
+           for(let i=0;i<n;i++){
+             const center=i*pitch;
+             const base=flankOffset(0),tip=flankOffset(tmax);
+             // Root arc -> left involute -> tip arc -> right involute -> root arc.
+             for(let j=0;j<=6;j++)put(rf,center-pitch/2+(pitch/2-base)*j/6);
+             put(rb,center-base);
+             for(let j=1;j<=36;j++){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center-flankOffset(t));}
+             for(let j=1;j<=10;j++)put(ra,center-tip+2*tip*j/10);
+             for(let j=35;j>=0;j--){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center+flankOffset(t));}
+             put(rf,center+base);
+             for(let j=1;j<=6;j++)put(rf,center+base+(pitch/2-base)*j/6);
            }
-           const radialOpacity=1-interval(t,begin+duration,0.22);
-           return <g opacity={opacity}>
-            {d&&<path d={d} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round"/>}
-            <g opacity={radialOpacity}><Segment a={center} b={end} color={THEME.blue} width={2}/><circle cx={end[0]} cy={end[1]} r={4} fill={THEME.blue}/><circle cx={center[0]} cy={center[1]} r={3} fill={THEME.blue}/></g>
-           </g>;
+           return points;
           }
-          const phases=[
-           [0,'画圆与直径','以 O 为圆心、OA 为半径画圆'],
-           [4,'作垂直直径','以 A、B 为圆心，取 AB 为半径作交弧'],
-           [9,'平分半径 OA','作 OA 的垂直平分线，得到中点 M'],
-           [14,'构造黄金分割长度','以 M 为圆心、MT 为半径画圆，得到 N'],
-           [20,'沿圆截取等弦','固定长度 ON，依次截取十个顶点'],
-           [35,'正十边形完成','十条等弦闭合，连接得到正十边形'],
-          ];
-          
-          function Decagon(){
+          function rackProfile(){
+           const module=2*64/20,pitch=Math.PI*module,pressure=20*Math.PI/180;
+           const yPitch=605+64,root=yPitch+1.25*module,tip=yPitch-module;
+           const hw=pitch/4,wide=hw+1.25*module*Math.tan(pressure),narrow=hw-module*Math.tan(pressure);
+           const points=[[1090,root]];
+           // At zero angle a pinion tooth points down into a rack space.
+           for(let j=-8;j<=16;j++){
+            const c=1260+(j+.5)*pitch;
+            for(const p of [[c-wide,root],[c-narrow,tip],[c+narrow,tip],[c+wide,root]])points.push(p);
+           }
+           points.push([1660,703],[1090,703]);
+           return points;
+          }
+          const GEAR_CACHE=new Map();
+          function Gear({cx,cy,r,n,opacity=1}){
+           const key=r+':'+n;
+           if(!GEAR_CACHE.has(key))GEAR_CACHE.set(key,gearProfile(r,n).map(([x,y])=>[cx+x,cy+y].join(',')).join(' '));
+           return <g opacity={opacity}><polygon points={GEAR_CACHE.get(key)} fill="none" stroke={K} strokeWidth="2.0" strokeLinejoin="round"/><circle cx={cx} cy={cy} r={r} fill="none" stroke={K} strokeWidth="0.8" strokeDasharray="8 7" strokeOpacity="0.5"/></g>;
+          }
+          function ArrowArc({cx,cy,r,a,b,label,lx,ly}){
+           const p=t=>[cx+r*Math.cos(t),cy-r*Math.sin(t)];const s=p(a),e=p(b);
+           return <g><path d={`M ${s} A ${r} ${r} 0 ${Math.abs(b-a)>Math.PI?1:0} ${b>a?0:1} ${e}`} stroke={B} strokeWidth="3" fill="none" markerEnd="url(#bluearrow)"/>{text(lx,ly,label,29,{fill:B})}</g>;
+          }
+          function Diagram(){
            const frame=useCurrentFrame(),{fps}=useVideoConfig();
-           const t=frame/fps;
-           const phase=phases.filter(([start])=>t>=start).at(-1);
-           const phaseIndex=phases.indexOf(phase);
-           const fadeAux=1-interval(t,34.6,1);
-           const dim=1-0.76*interval(t,19,0.8);
-           const located=1+Array.from({length:9},(_,i)=>20+i*1.45+0.85).filter(begin=>t>=begin).length;
-           const final=interval(t,35,1);
-           const H=[O[0],O[1]-Math.sqrt(3)*R],K=[O[0],O[1]+Math.sqrt(3)*R];
-           const U=[M[0],O[1]-Math.sqrt(3)*R/2],V=[M[0],O[1]+Math.sqrt(3)*R/2];
-           return <AbsoluteFill style={{backgroundColor:THEME.background}}><svg width="3840" height="2160" viewBox="0 0 1920 1080" style={tx}>
-            <text x="960" y="100" textAnchor="middle" fontSize="44" letterSpacing="6">正十边形 · 尺规作图</text>
-            <text x="960" y="150" textAnchor="middle" fontSize="22" fill={THEME.muted}>STRAIGHTEDGE &amp; COMPASS CONSTRUCTION</text>
-            <Sweep center={O} radius={R} t={t} begin={0.6} duration={2.5} color={THEME.ink} width={3} opacity={1-final*0.6}/>
-            <g opacity={fadeAux*dim}>
-             <Segment a={[B[0]-45,B[1]]} b={[A[0]+120,A[1]]} p={interval(t,3.2,0.7)} color={THEME.muted}/>
-             <Dot p={O} label="O" offset={[0,32]}/><Dot p={A} label="A" offset={[24,0]}/>
-             {t>3.8&&<Dot p={B} label="B" offset={[-25,0]}/>}
-             {[A,B].flatMap((center,i)=>[H,K].map((target,j)=><Sweep key={`perp${i}${j}`} center={center} radius={2*R} start={bearing(center,target)-0.16} span={0.32} t={t} begin={4.5+(i*2+j)*0.65} duration={0.55} color={THEME.muted} opacity={1-interval(t,8,0.6)}/>))}
-             <Segment a={K} b={H} p={interval(t,7.3,0.8)} color={THEME.muted}/>
-             {t>=8.1&&<Dot p={T} label="T"/>}
-             {[O,A].flatMap((center,i)=>[U,V].map((target,j)=><Sweep key={`mid${i}${j}`} center={center} radius={R} start={bearing(center,target)-0.19} span={0.38} t={t} begin={9.3+(i*2+j)*0.65} duration={0.55} color={THEME.muted} opacity={1-interval(t,12.8,0.6)}/>))}
-             <Segment a={[V[0],V[1]+35]} b={[U[0],U[1]-35]} p={interval(t,12,0.7)} color={THEME.muted}/>
-             {t>=12.7&&<Dot p={M} label="M" offset={[0,34]}/>}
-             <Segment a={M} b={T} p={interval(t,13,0.7)} color={THEME.blue}/>
-             <Sweep center={M} radius={MT} start={bearing(M,T)} t={t} begin={14.6} duration={2.8}/>
-             {t>=17.4&&<Dot p={N} label="N" color={THEME.yellow}/>}
-            </g>
-            <g opacity={fadeAux}><Segment a={O} b={N} p={interval(t,17.5,0.7)} color={THEME.yellow} width={5} opacity={1-0.6*interval(t,19,0.8)}/></g>
-            {Array.from({length:10},(_,i)=>{
-              const center=points[i],target=points[(i+1)%10],begin=20+i*1.45;
-              return <g key={`step${i}`}>
-               <Sweep center={center} radius={SIDE} start={bearing(center,target)-0.27} span={0.54} t={t} begin={begin} duration={0.85} color={THEME.blue} opacity={fadeAux*(1-0.7*interval(t,begin+1.05,0.25))}/>
-               <Segment a={center} b={target} p={interval(t,begin+0.85,0.45)} width={4} color={THEME.yellow}/>
-              </g>;
-            })}
-            {t>=20&&points.map((p,i)=>t>=20+(Math.max(0,i-1))*1.45+(i===0?0:0.85)&&<Dot key={`vertex${i}`} p={p} color={THEME.yellow}/>)}
-            {final>0&&<polygon points={points.map(p=>p.join(',')).join(' ')} fill={THEME.yellow} fillOpacity={0.07*final} stroke="none"/>}
-            <line x1="1130" y1="235" x2="1130" y2="880" stroke={THEME.muted} strokeOpacity="0.22"/>
-            <g transform="translate(1220 280)">
-             <text fontSize="24" fill={THEME.blue}>STEP {phaseIndex+1} / 6</text>
-             <text y="64" fontSize="38" fill={phaseIndex===5?THEME.yellow:THEME.ink}>{phase[1]}</text>
-             {phaseIndex<=1?<g fontSize="27" fill={THEME.muted}><text y="145">给定半径 R</text><text y="205">先构造两条垂直直径</text><text y="265">只使用直线与圆弧</text></g>:<g>
-              <text y="145" fontSize="30">OM = R / 2</text>
-              <text y="205" fontSize="30">MT² = R² + (R / 2)²</text>
-              {t>=17.5&&<g opacity={interval(t,17.5,0.6)}><text y="285" fontSize="30">ON = MT − OM</text><text y="355" fontSize="34" fill={THEME.yellow}>s = (√5 − 1)R / 2</text></g>}
-             </g>}
-             {t>=20&&t<35&&<g><text y="465" fontSize="23" fill={THEME.muted}>已定位顶点</text><text y="535" fontSize="58" fill={THEME.yellow}>{located} / 10</text></g>}
-             {t>=35&&<g><text y="465" fontSize="30">圆心角：36°</text><text y="525" fontSize="30">内角：144°</text></g>}
-            </g>
-            <text x="960" y="1020" textAnchor="middle" fontSize="30">{phase[2]}</text>
-           </svg></AbsoluteFill>;
+           const videoTime=frame/fps;
+           const time=Math.min(6,Math.max(0,(videoTime-3)*0.3));
+           const v=response(time),shift=v.x*1600;
+           const deg=angle=>-angle*180/Math.PI;
+           let spring=[[1800+shift,710],[1820+shift,710]];
+           for(let i=0;i<12;i++)spring.push([1830+shift+i*(121-shift)/11,i%2?728:692]);
+           spring.push([1965,710],[1990,710]);
+           const rotor=[1260,365],output=[1260,605];
+           const mlabel=(x,y,value)=>text(x,y,value,19,{fill:'#647180',textAnchor:'middle'});
+           return <svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 1920 1080" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
+           {text(960,69,'弹性传动 · 耦合振动',34,{textAnchor:'middle',fontWeight:500,letterSpacing:3})}
+           {text(960,106,'GEAR  /  SHAFT  /  SPRING',14,{textAnchor:'middle',fill:'#89929d',letterSpacing:4})}
+           {[[430,'物理时间',time.toFixed(2),'s'],
+             [775,'滑块位移',(v.x*1000).toFixed(2),'mm'],
+             [1135,'轴内扭矩',v.torque.toFixed(3),'N·m'],
+             [1480,'最大剪应力',v.stress.toFixed(2),'MPa']].map(([x,label,value,unit])=><g key={label}>
+               {text(x,173,label,19,{textAnchor:'middle',fill:'#89929d'})}
+               <text x={x} y="221" textAnchor="middle" fill={B} fontSize="35" fontWeight="400">{value}<tspan dx="10" fontSize="17" fill="#647180">{unit}</tspan></text>
+             </g>)}
+           {/* The mechanism alone is enlarged and centred; no surrounding UI panels. */}
+           <g transform="translate(-1092.5 -67.5) scale(1.35)">
+             <g transform={`rotate(${deg(v.q1)} 1260 365)`}>
+               <Gear cx={1260} cy={365} r={80} n={24}/>
+               {line(1260,365,1320,365,{stroke:B,strokeWidth:2.2})}
+               <circle cx="1320" cy="365" r="4" fill={B}/>
+             </g>
+             <g transform={`rotate(${deg(v.q2)} 1260 605)`}>
+               <g transform="rotate(3.75 1260 605)"><Gear cx={1260} cy={605} r={160} n={48} opacity={0.42}/></g>
+               <Gear cx={1260} cy={605} r={64} n={20}/>
+               {line(1260,605,1260,455,{stroke:B,strokeWidth:1.8,strokeOpacity:.7})}
+               <circle cx="1260" cy="455" r="4" fill={B}/>
+             </g>
+             {[365,605].map(y=><g key={y}><circle cx="1260" cy={y} r="7" fill="white" stroke={K} strokeWidth="2"/><circle cx="1260" cy={y} r="2.5" fill={K}/></g>)}
+             {mlabel(1143,364,'θ₁')}
+             {mlabel(1065,606,'θ₂')}
+             <g transform={`translate(${shift} 0)`}>
+               <defs><clipPath id="rackWindow"><rect x="1170" y="650" width="360" height="60"/></clipPath></defs>
+               <g clipPath="url(#rackWindow)"><polygon points={rackProfile().map(p=>p.join(',')).join(' ')} fill="white" stroke={K} strokeWidth="1.8" strokeLinejoin="round"/></g>
+               {line(1170,677,1170,703,{strokeWidth:1.8})}{line(1530,677,1530,703,{strokeWidth:1.8})}
+               {line(1530,689,1585,689,{strokeWidth:2})}
+               <rect x="1585" y="645" width="180" height="100" fill="white" stroke={K} strokeWidth="2"/>
+               {text(1675,704,'m',26,{textAnchor:'middle',fill:'#647180'})}
+             </g>
+             {line(1765+shift,695,1800+shift,695,{strokeWidth:2})}
+             {line(1800+shift,695,1800+shift,710,{strokeWidth:2})}
+             <polyline points={spring.map(p=>p.join(',')).join(' ')} fill="none" stroke={K} strokeWidth="2.1" strokeLinejoin="round"/>
+             {line(1990,664,1990,758,{strokeWidth:3})}
+             {Array.from({length:6},(_,i)=>line(1990,671+15*i,2005,656+15*i,{strokeWidth:1}))}
+             {line(1555,755,1785,755,{strokeWidth:1.5,stroke:'#89929d'})}
+             {mlabel(1900,665,'k')}
+             {mlabel(1675,620,'x →')}
+           </g>
+           {text(960,1029,videoTime<3?'初始静止 · 随后施加恒定驱动力矩':'M = 1.00 N·m    ·    慢放 × 0.30    ·    无阻尼',17,{textAnchor:'middle',fill:'#89929d'})}
+           </svg>;
           }
-          const Root=()=> <Composition id="Decagon" component={Decagon} width={3840} height={2160} fps={120} durationInFrames={40*120}/>;
-          registerRoot(Root);
-          
+          registerRoot(()=> <Composition id="Mechanics" component={Diagram} width={3840} height={2160} fps={120} durationInFrames={24*120}/>);
           VIDEO_JSX
       - name: Install dependencies
         run: npm install --no-audit --no-fund
@@ -150,11 +173,11 @@ jobs:
       - name: Render MP4
         env:
           VIDEO_FPS: ${{ inputs.frame_rate }}
-        run: npx remotion render index.jsx Decagon out/decagon.mp4 --codec=h264 --crf=18 --concurrency=1 --fps="$VIDEO_FPS" --duration="$((40 * VIDEO_FPS))"
+        run: npx remotion render mechanics.jsx Mechanics out/mechanics.mp4 --codec=h264 --crf=18 --concurrency=1 --fps="$VIDEO_FPS" --duration="$((24 * VIDEO_FPS))"
       - name: Downloadable video
         uses: actions/upload-artifact@v4
         with:
-          name: decagon-video-4k-${{ inputs.frame_rate }}fps
-          path: out/decagon.mp4
+          name: mechanics-animation-4k-${{ inputs.frame_rate }}fps
+          path: out/mechanics.mp4
           retention-days: 3
           if-no-files-found: error
