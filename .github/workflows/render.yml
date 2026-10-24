@@ -3,11 +3,11 @@ on:
   workflow_dispatch:
     inputs:
       frame_rate:
-        description: 'Frame rate (30 for first test, 60 for smoother motion)'
+        description: 'Frame rate: 30, 60, or 120 fps'
         required: true
         type: choice
         default: '30'
-        options: ['30', '60']
+        options: ['30', '60', '120']
 permissions:
   contents: read
 concurrency:
