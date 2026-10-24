@@ -61,9 +61,47 @@ jobs:
           
           const text=(x,y,s,size=28,extra={})=><text x={x} y={y} fontSize={size} fill={K} {...extra}>{s}</text>;
           const line=(x1,y1,x2,y2,extra={})=><line x1={x1} y1={y1} x2={x2} y2={y2} stroke={K} strokeWidth="3" {...extra}/>;
+          // Standard 20-degree involute flanks; root transitions remain schematic.
+          function gearProfile(r,n){
+           const pressure=20*Math.PI/180,module=2*r/n;
+           const rb=r*Math.cos(pressure),ra=r+module,rf=r-1.25*module;
+           const invPitch=Math.tan(pressure)-pressure,half=Math.PI/(2*n);
+           const tmax=Math.sqrt((ra/rb)**2-1);
+           const flankOffset=t=>half+invPitch-(t-Math.atan(t));
+           const points=[],put=(rad,a)=>points.push([rad*Math.cos(a),rad*Math.sin(a)]);
+           const pitch=2*Math.PI/n;
+           for(let i=0;i<n;i++){
+             const center=i*pitch;
+             const base=flankOffset(0),tip=flankOffset(tmax);
+             // Root arc -> left involute -> tip arc -> right involute -> root arc.
+             for(let j=0;j<=6;j++)put(rf,center-pitch/2+(pitch/2-base)*j/6);
+             put(rb,center-base);
+             for(let j=1;j<=36;j++){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center-flankOffset(t));}
+             for(let j=1;j<=10;j++)put(ra,center-tip+2*tip*j/10);
+             for(let j=35;j>=0;j--){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center+flankOffset(t));}
+             put(rf,center+base);
+             for(let j=1;j<=6;j++)put(rf,center+base+(pitch/2-base)*j/6);
+           }
+           return points;
+          }
+          function rackProfile(){
+           const module=2*64/20,pitch=Math.PI*module,pressure=20*Math.PI/180;
+           const yPitch=605+64,root=yPitch+1.25*module,tip=yPitch-module;
+           const hw=pitch/4,wide=hw+1.25*module*Math.tan(pressure),narrow=hw-module*Math.tan(pressure);
+           const points=[[1090,root]];
+           // At zero angle a pinion tooth points down into a rack space.
+           for(let j=-8;j<=16;j++){
+            const c=1260+(j+.5)*pitch;
+            for(const p of [[c-wide,root],[c-narrow,tip],[c+narrow,tip],[c+wide,root]])points.push(p);
+           }
+           points.push([1660,703],[1090,703]);
+           return points;
+          }
+          const GEAR_CACHE=new Map();
           function Gear({cx,cy,r,n,opacity=1}){
-           let points=[];for(let i=0;i<n;i++)for(const [f,dr] of [[-.5,-5],[-.3,-5],[-.2,5],[.2,5],[.3,-5]]){const a=(i+f)*2*Math.PI/n;points.push(`${cx+(r+dr)*Math.cos(a)},${cy+(r+dr)*Math.sin(a)}`);}
-           return <g opacity={opacity}><polygon points={points.join(' ')} fill="none" stroke={K} strokeWidth="2.5"/><circle cx={cx} cy={cy} r={r} fill="none" stroke={K} strokeWidth="1" strokeDasharray="8 7"/></g>;
+           const key=r+':'+n;
+           if(!GEAR_CACHE.has(key))GEAR_CACHE.set(key,gearProfile(r,n).map(([x,y])=>[cx+x,cy+y].join(',')).join(' '));
+           return <g opacity={opacity}><polygon points={GEAR_CACHE.get(key)} fill="none" stroke={K} strokeWidth="2.0" strokeLinejoin="round"/><circle cx={cx} cy={cy} r={r} fill="none" stroke={K} strokeWidth="0.8" strokeDasharray="8 7" strokeOpacity="0.5"/></g>;
           }
           function ArrowArc({cx,cy,r,a,b,label,lx,ly}){
            const p=t=>[cx+r*Math.cos(t),cy-r*Math.sin(t)];const s=p(a),e=p(b);
@@ -75,86 +113,58 @@ jobs:
            const time=Math.min(6,Math.max(0,(videoTime-3)*0.3));
            const v=response(time),shift=v.x*1600;
            const deg=angle=>-angle*180/Math.PI;
-           const activated=videoTime>=3;
            let spring=[[1800+shift,710],[1820+shift,710]];
            for(let i=0;i<12;i++)spring.push([1830+shift+i*(121-shift)/11,i%2?728:692]);
            spring.push([1965,710],[1990,710]);
-          
-           return <svg xmlns="http://www.w3.org/2000/svg" width="2100" height="1200" viewBox="0 0 2100 1200" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
-           <defs><marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0 0 L9 4 L0 8 Z" fill={K}/></marker><marker id="bluearrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0 0 L9 4 L0 8 Z" fill={B}/></marker></defs>
-           {text(85,82,'弹性传动轴—齿轮—弹簧｜启动瞬态',48,{fontWeight:600})}
-           {text(85,132,'耦合振动动画 · 电机施加恒定力矩 · 初始静止、弹簧无变形',25,{fill:'#647180'})}
-           <rect x="65" y="180" width="930" height="650" rx="18" fill="#f8fafc" stroke="#d8e0e8"/>
-           <rect x="1025" y="180" width="1010" height="650" rx="18" fill="white" stroke="#d8e0e8"/>
-           {text(100,230,'① 输入轴系（侧视）',29,{fontWeight:600})}
-           {text(1060,230,'② 齿轮传动与直线输出（端视）',29,{fontWeight:600})}
-           {/* rotor viewed schematically in side elevation */}
-           <ellipse cx="260" cy="400" rx="45" ry="110" fill="white" stroke={K} strokeWidth="3"/>
-           <path d="M260 290 L305 290 A45 110 0 0 1 305 510 L260 510" fill="white" stroke={K} strokeWidth="3"/>
-           <ellipse cx="305" cy="400" rx="45" ry="110" fill="white" stroke={K} strokeWidth="3"/>
-           {line(125,400,930,400,{strokeDasharray:'10 8',strokeWidth:1,stroke:'#8b99a6'})}
-           <rect x="350" y="382" width="435" height="36" rx="5" fill="white" stroke={K} strokeWidth="3"/>
-           {line(305,400,305+32*Math.cos(v.qa),400-95*Math.sin(v.qa),{stroke:B,strokeWidth:4})}
-           {line(834,400,834+22*Math.cos(v.q1),400-66*Math.sin(v.q1),{stroke:B,strokeWidth:3})}
-           {/* a surface generator follows the local rotation along the shaft */}
-           <polyline points={Array.from({length:51},(_,i)=>{const f=i/50,angle=v.qa*(1-f)+v.q1*f;return `${350+435*f},${400-15*Math.sin(angle)}`;}).join(' ')} fill="none" stroke={B} strokeWidth="3"/>
-           <rect x="790" y="325" width="44" height="150" fill="white" stroke={K} strokeWidth="3"/>
-           <ellipse cx="834" cy="400" rx="26" ry="75" fill="white" stroke={K} strokeWidth="3"/>
-           {text(180,560,'电机转子 A',29)}
-           {text(170,602,'J_A = 0.08 kg·m²',26)}
-           {text(430,322,'均匀圆截面弹性轴',29)}
-           {text(420,558,'L = 0.80 m；d = 10 mm',26)}
-           {text(420,601,'G = 80 GPa；内扭矩 T(t)',26)}
-           {text(765,559,'齿轮 1',29)}
-           <ArrowArc cx={305} cy={400} r={130} a={.15} b={1.25} label="M(t), θ_A" lx={110} ly={268}/>
-           <ArrowArc cx={834} cy={400} r={100} a={-.1} b={1.25} label="θ₁" lx={895} ly={290}/>
-           {line(350,667,785,667,{strokeWidth:1.5})}{line(350,652,350,682,{strokeWidth:1.5})}{line(785,652,785,682,{strokeWidth:1.5})}
-           {text(525,707,'轴长 L',24)}
-           {text(105,780,'轴两端可产生相对扭转：θ_A ≠ θ₁',27,{fill:B})}
-           {/* end view: fixed axes, 2:1 pitch radii */}
-           <g transform={`rotate(${deg(v.q1)} 1260 365)`}><Gear cx={1260} cy={365} r={80} n={24}/>{line(1260,365,1320,365,{strokeWidth:3})}<circle cx="1320" cy="365" r="6" fill={B}/></g>
-           <g transform={`rotate(${deg(v.q2)} 1260 605)`}><g transform="rotate(3.75 1260 605)"><Gear cx={1260} cy={605} r={160} n={48} opacity={0.55}/></g><Gear cx={1260} cy={605} r={64} n={20}/>{line(1260,605,1260,455,{stroke:B,strokeWidth:3})}<circle cx="1260" cy="455" r="7" fill={B}/></g>
-           {line(1260,605,1317,577,{strokeWidth:2})}
-           {text(1320,579,'a',24)}
-           {[365,605].map(y=><g key={y}><circle cx="1260" cy={y} r="9" fill="white" stroke={K} strokeWidth="3"/><circle cx="1260" cy={y} r="3" fill={K}/></g>)}
-           {text(1400,313,'齿轮 1：r₁ = 0.05 m',26)}
-           {text(1400,352,'J₁ = 0.02 kg·m²',25)}
-           {line(1342,353,1380,333,{strokeWidth:1.5})}
-           {text(1460,445,'齿轮 2：r₂ = 0.10 m',26)}
-           {text(1460,484,'与小齿轮刚性同轴',25)}
-           {text(1460,523,'合计 J₂ = 0.12 kg·m²',25)}
-           {line(1367,488,1440,463,{strokeWidth:1.5})}
-           <ArrowArc cx={1260} cy={365} r={106} a={-.1} b={1.1} label="θ₁" lx={1315} ly={252}/>
-           <ArrowArc cx={1260} cy={605} r={95} a={2.1} b={3.25} label="θ₂" lx={1105} ly={555}/>
-           {/* rack engages only the coaxial output pinion at its bottom pitch point */}
-           <g transform={`translate(${shift} 0)`}><rect x="1170" y="675" width="360" height="28" fill="white" stroke={K} strokeWidth="2.5"/>
-           <path d={Array.from({length:18},(_,i)=>`M${1170+20*i} 675 l5 -10 h7 l5 10`).join(' ')} fill="none" stroke={K} strokeWidth="2"/>
-           {line(1530,689,1585,689)}
-           <rect x="1585" y="645" width="180" height="100" fill="#f8fafc" stroke={K} strokeWidth="3"/>
-           {text(1625,706,'滑块',30)}
-           </g>{line(1765+shift,695,1800+shift,695)}{line(1800+shift,695,1800+shift,710)}
-           <polyline points={spring.map(p=>p.join(',')).join(' ')} fill="none" stroke={K} strokeWidth="3"/>
-           {line(1990,655,1990,765,{strokeWidth:5})}
-           {Array.from({length:7},(_,i)=>line(1990,658+15*i,2010,643+15*i,{strokeWidth:1.4}))}
-           {line(1545,755,1785,755,{strokeWidth:2})}{line(1545,767,1785,767,{strokeWidth:1})}
-           {line(1610,610,1760,610,{stroke:B,markerEnd:'url(#bluearrow)'})}
-           {text(1652,589,'x →',26,{fill:B})}
-           {text(1800,633,'弹簧 k',26)}
-           {text(1800,802,'k = 5000 N/m',23)}
-           {text(1480,803,'齿条 + 滑块：m = 10 kg',23)}
-           {text(1080,802,'小齿轮 a = 0.04 m',23)}
-           {/* live values and force-step status */}
-           <rect x="65" y="870" width="1970" height="245" rx="16" fill="#f4f7fa"/>
-           {text(105,918,activated?'恒力矩已施加：M = 1.00 N·m':'初始状态：系统静止，等待施加力矩',29,{fill:B,fontWeight:600})}
-           {[[110,'物理时间',`${time.toFixed(2)} s`],
-             [560,'滑块位移 x',`${(v.x*1000).toFixed(2)} mm`],
-             [1040,'轴内扭矩 T',`${v.torque.toFixed(3)} N·m`],
-             [1550,'最大剪应力 |τ|',`${v.stress.toFixed(2)} MPa`]].map(([x,label,value])=><g key={label}>{text(x,978,label,25,{fill:'#647180'})}{text(x,1035,value,38,{fill:B})}</g>)}
-           {text(110,1085,'θ₂ = −θ₁/2； x = aθ₂； T = (Gπd⁴/32L)(θ_A − θ₁)； τ = 16|T|/(πd³)',25)}
-           {text(85,1158,'慢放：1 秒视频对应 0.30 秒物理时间。滑块位移与小齿轮半径保持同一比例；大齿轮透明表示，齿条仅与同轴小齿轮啮合。',23,{fill:'#647180'})}
+           const rotor=[1260,365],output=[1260,605];
+           const mlabel=(x,y,value)=>text(x,y,value,19,{fill:'#647180',textAnchor:'middle'});
+           return <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
+           {text(960,69,'弹性传动 · 耦合振动',34,{textAnchor:'middle',fontWeight:500,letterSpacing:3})}
+           {text(960,106,'GEAR  /  SHAFT  /  SPRING',14,{textAnchor:'middle',fill:'#89929d',letterSpacing:4})}
+           {[[430,'物理时间',time.toFixed(2),'s'],
+             [775,'滑块位移',(v.x*1000).toFixed(2),'mm'],
+             [1135,'轴内扭矩',v.torque.toFixed(3),'N·m'],
+             [1480,'最大剪应力',v.stress.toFixed(2),'MPa']].map(([x,label,value,unit])=><g key={label}>
+               {text(x,173,label,19,{textAnchor:'middle',fill:'#89929d'})}
+               <text x={x} y="221" textAnchor="middle" fill={B} fontSize="35" fontWeight="400">{value}<tspan dx="10" fontSize="17" fill="#647180">{unit}</tspan></text>
+             </g>)}
+           {/* The mechanism alone is enlarged and centred; no surrounding UI panels. */}
+           <g transform="translate(-1092.5 -67.5) scale(1.35)">
+             <g transform={`rotate(${deg(v.q1)} 1260 365)`}>
+               <Gear cx={1260} cy={365} r={80} n={24}/>
+               {line(1260,365,1320,365,{stroke:B,strokeWidth:2.2})}
+               <circle cx="1320" cy="365" r="4" fill={B}/>
+             </g>
+             <g transform={`rotate(${deg(v.q2)} 1260 605)`}>
+               <g transform="rotate(3.75 1260 605)"><Gear cx={1260} cy={605} r={160} n={48} opacity={0.42}/></g>
+               <Gear cx={1260} cy={605} r={64} n={20}/>
+               {line(1260,605,1260,455,{stroke:B,strokeWidth:1.8,strokeOpacity:.7})}
+               <circle cx="1260" cy="455" r="4" fill={B}/>
+             </g>
+             {[365,605].map(y=><g key={y}><circle cx="1260" cy={y} r="7" fill="white" stroke={K} strokeWidth="2"/><circle cx="1260" cy={y} r="2.5" fill={K}/></g>)}
+             {mlabel(1143,364,'θ₁')}
+             {mlabel(1065,606,'θ₂')}
+             <g transform={`translate(${shift} 0)`}>
+               <defs><clipPath id="rackWindow"><rect x="1170" y="650" width="360" height="60"/></clipPath></defs>
+               <g clipPath="url(#rackWindow)"><polygon points={rackProfile().map(p=>p.join(',')).join(' ')} fill="white" stroke={K} strokeWidth="1.8" strokeLinejoin="round"/></g>
+               {line(1170,677,1170,703,{strokeWidth:1.8})}{line(1530,677,1530,703,{strokeWidth:1.8})}
+               {line(1530,689,1585,689,{strokeWidth:2})}
+               <rect x="1585" y="645" width="180" height="100" fill="white" stroke={K} strokeWidth="2"/>
+               {text(1675,704,'m',26,{textAnchor:'middle',fill:'#647180'})}
+             </g>
+             {line(1765+shift,695,1800+shift,695,{strokeWidth:2})}
+             {line(1800+shift,695,1800+shift,710,{strokeWidth:2})}
+             <polyline points={spring.map(p=>p.join(',')).join(' ')} fill="none" stroke={K} strokeWidth="2.1" strokeLinejoin="round"/>
+             {line(1990,664,1990,758,{strokeWidth:3})}
+             {Array.from({length:6},(_,i)=>line(1990,671+15*i,2005,656+15*i,{strokeWidth:1}))}
+             {line(1555,755,1785,755,{strokeWidth:1.5,stroke:'#89929d'})}
+             {mlabel(1900,665,'k')}
+             {mlabel(1675,620,'x →')}
+           </g>
+           {text(960,1029,videoTime<3?'初始静止 · 随后施加恒定驱动力矩':'M = 1.00 N·m    ·    慢放 × 0.30    ·    无阻尼',17,{textAnchor:'middle',fill:'#89929d'})}
            </svg>;
           }
-          registerRoot(()=> <Composition id="Mechanics" component={Diagram} width={2100} height={1200} fps={30} durationInFrames={24*30}/>);
+          registerRoot(()=> <Composition id="Mechanics" component={Diagram} width={1920} height={1080} fps={30} durationInFrames={24*30}/>);
           VIDEO_JSX
       - name: Install dependencies
         run: npm install --no-audit --no-fund
