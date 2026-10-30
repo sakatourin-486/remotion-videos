@@ -1,180 +1,41 @@
-name: Render gears and crank
+name: Render Franklin 4K60
+
 on:
   workflow_dispatch:
-    inputs:
-      frame_rate:
-        description: 'Frame rate: 120 fps'
-        required: true
-        type: choice
-        default: '120'
-        options: ['120']
+
 permissions:
   contents: read
-concurrency:
-  group: render-${{ github.ref }}
-  cancel-in-progress: false
+
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-      - name: Prepare video project
-        run: |
-          cat > package.json <<'PACKAGE_JSON'
-          {"name":"decagon-video","version":"1.0.0","private":true,"scripts":{"studio":"remotion studio index.jsx","render":"remotion render crank.jsx Crank out/crank.mp4 --codec=h264 --crf=18 --concurrency=1"},"dependencies":{"@fontsource/noto-sans-sc":"5.3.1","@remotion/cli":"4.0.538","react":"18.3.1","react-dom":"18.3.1","remotion":"4.0.538"}}
-          PACKAGE_JSON
-          cat > crank.jsx <<'VIDEO_JSX'
-          import React from 'react';
-          import '@fontsource/noto-sans-sc/400.css';
-          import {Composition,registerRoot,useCurrentFrame,useVideoConfig} from 'remotion';
-          const K='#17212b',B='#276b9c';
-          
-          // 题目参数，单位 kg、m、s、N·m；圆盘、均匀杆，忽略摩擦与阻尼。
-          const P={m:1,r:0.20,g:9.8,M:0.50,theta0:40,phi0:20,wtheta0:0,wphi0:0,seconds:6};
-          // 两自由度质量矩阵 mr² [[33/2,-3],[-3,321/32]]。
-          // 小轮绝对自转角 ψ=3θ−2φ；重力势能 -4.5mgr cosθ - mgr cosφ/8。
-          function integrate(){
-           const a=16.5,b=-3,c=321/32,det=a*c-b*b,scale=P.m*P.r*P.r;
-           const count=Math.ceil(P.seconds/.001),dt=P.seconds/count;
-           const rhs=y=>{
-             const ft=P.M-4.5*P.m*P.g*P.r*Math.sin(y[0]);
-             const fp=-P.m*P.g*P.r*Math.sin(y[1])/8;
-             return [y[2],y[3],(c*ft-b*fp)/(scale*det),(-b*ft+a*fp)/(scale*det)];
-           };
-           const add=(y,k,f)=>y.map((v,i)=>v+f*k[i]);
-           const states=[[P.theta0*Math.PI/180,P.phi0*Math.PI/180,P.wtheta0,P.wphi0]];
-           for(let i=0;i<count;i++){
-             const y=states[i],k1=rhs(y),k2=rhs(add(y,k1,dt/2)),k3=rhs(add(y,k2,dt/2)),k4=rhs(add(y,k3,dt));
-             states.push(y.map((v,j)=>v+dt*(k1[j]+2*k2[j]+2*k3[j]+k4[j])/6));
-           }
-           return {dt,states};
-          }
-          const solution=integrate();
-          function sample(t){
-           const f=Math.max(0,Math.min(P.seconds,t))/solution.dt;
-           const i=Math.min(solution.states.length-2,Math.floor(f)),u=Math.min(1,f-i);
-           return solution.states[i].map((v,j)=>v*(1-u)+solution.states[i+1][j]*u);
-          }
-          
-          function gearProfile(r,n){
-           const pressure=20*Math.PI/180,module=2*r/n;
-           const rb=r*Math.cos(pressure),ra=r+module,rf=r-1.25*module;
-           const invPitch=Math.tan(pressure)-pressure,half=Math.PI/(2*n);
-           const tmax=Math.sqrt((ra/rb)**2-1);
-           const flankOffset=t=>half+invPitch-(t-Math.atan(t));
-           const points=[],put=(rad,a)=>points.push([rad*Math.cos(a),rad*Math.sin(a)]);
-           const pitch=2*Math.PI/n;
-           for(let i=0;i<n;i++){
-             const center=i*pitch;
-             const base=flankOffset(0),tip=flankOffset(tmax);
-             // Root arc -> left involute -> tip arc -> right involute -> root arc.
-             for(let j=0;j<=6;j++)put(rf,center-pitch/2+(pitch/2-base)*j/6);
-             put(rb,center-base);
-             for(let j=1;j<=36;j++){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center-flankOffset(t));}
-             for(let j=1;j<=10;j++)put(ra,center-tip+2*tip*j/10);
-             for(let j=35;j>=0;j--){const t=tmax*j/36;put(rb*Math.sqrt(1+t*t),center+flankOffset(t));}
-             put(rf,center+base);
-             for(let j=1;j<=6;j++)put(rf,center+base+(pitch/2-base)*j/6);
-           }
-           return points;
-          }
-          function rackProfile(){
-           const module=2*64/20,pitch=Math.PI*module,pressure=20*Math.PI/180;
-           const yPitch=605+64,root=yPitch+1.25*module,tip=yPitch-module;
-           const hw=pitch/4,wide=hw+1.25*module*Math.tan(pressure),narrow=hw-module*Math.tan(pressure);
-           const points=[[1090,root]];
-           // At zero angle a pinion tooth points down into a rack space.
-           for(let j=-8;j<=16;j++){
-            const c=1260+(j+.5)*pitch;
-            for(const p of [[c-wide,root],[c-narrow,tip],[c+narrow,tip],[c+wide,root]])points.push(p);
-           }
-           points.push([1660,703],[1090,703]);
-           return points;
-          }
-          const GEAR_CACHE=new Map();
-          function Gear({cx,cy,r,n,opacity=1}){
-           const key=r+':'+n;
-           if(!GEAR_CACHE.has(key))GEAR_CACHE.set(key,gearProfile(r,n).map(p=>p.join(',')).join(' '));
-           return <g transform={`translate(${cx} ${cy})`} opacity={opacity}>
-           <polygon points={GEAR_CACHE.get(key)} fill="none" stroke={K} strokeWidth="2" strokeLinejoin="round"/>
-           <circle r={r} fill="none" stroke={K} strokeWidth="0.8" strokeDasharray="8 7" strokeOpacity="0.5"/>
-           </g>;
-          }
-          const text=(x,y,s,size=26,extra={})=><text x={x} y={y} fontSize={size} fill={K} {...extra}>{s}</text>;
-          const line=(a,b,extra={})=><line x1={a[0]} y1={a[1]} x2={b[0]} y2={b[1]} stroke={K} strokeWidth="2" strokeLinecap="round" {...extra}/>;
-          function Diagram(){
-           const frame=useCurrentFrame(),{fps}=useVideoConfig();
-           const videoTime=frame/fps,time=Math.min(P.seconds,Math.max(0,(videoTime-1.5)*P.seconds/21));
-           const [theta,phi]=sample(time),psi=3*theta-2*phi;
-           const O=[915,520],r=100,R=200;
-           const dir=a=>[Math.sin(a),Math.cos(a)];
-           const pos=(a,l)=>[O[0]+l*dir(a)[0],O[1]+l*dir(a)[1]];
-           const C1=pos(theta,3*r),C0=pos(phi,r/4),D=pos(theta,R),C=pos(theta,1.5*r);
-           const angleArc=(radius,a,color)=>{
-            const start=[O[0],O[1]+radius],end=pos(a,radius);
-            return <path d={`M ${start} A ${radius} ${radius} 0 0 ${a>=0?0:1} ${end}`} fill="none" stroke={color} strokeWidth="1.5"/>;
-           };
-           return <svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 1920 1080" style={{background:'white',fontFamily:'Noto Sans SC,sans-serif'}}>
-           <defs><marker id="torquearrow" markerWidth="8" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0 L8 3.5 L0 7 Z" fill={B}/></marker></defs>
-           {text(960,72,'齿轮与曲柄',35,{textAnchor:'middle',fontWeight:500,letterSpacing:4})}
-           {text(960,108,'GEARS  /  CRANK',14,{textAnchor:'middle',fill:'#89929d',letterSpacing:4})}
-           {[[440,'物理时间',time.toFixed(2),'s'],[785,'曲柄转角 θ',(theta*180/Math.PI).toFixed(2),'°'],[1135,'大齿轮转角 φ',(phi*180/Math.PI).toFixed(2),'°'],[1480,'驱动力矩 M',P.M.toFixed(2),'N·m']].map(([x,label,value,unit])=><g key={label}>
-           {text(x,174,label,19,{textAnchor:'middle',fill:'#89929d'})}
-           <text x={x} y="222" textAnchor="middle" fill={B} fontSize="34">{value}<tspan dx="8" fontSize="17" fill="#647180">{unit}</tspan></text>
-           </g>)}
-           {text(960,270,`m = ${P.m} kg    ·    r = ${P.r.toFixed(2)} m    ·    R = 2r    ·    e = r/4`,17,{textAnchor:'middle',fill:'#89929d'})}
-           {/* Full mechanism: fixed bearing O, rotating large gear, orbiting small gear. */}
-           <g transform={`rotate(${-phi*180/Math.PI} ${O})`}><Gear cx={O[0]} cy={O[1]} r={R} n={48} opacity={.75}/></g>
-           <g transform={`rotate(${-psi*180/Math.PI+180/24} ${C1})`}><Gear cx={C1[0]} cy={C1[1]} r={r} n={24}/>
-           {line(C1,[C1[0]+r*.73,C1[1]],{stroke:B,strokeWidth:2})}
-           <circle cx={C1[0]+r*.73} cy={C1[1]} r="4" fill={B}/></g>
-           {line(O,[O[0],O[1]+R+63],{stroke:'#acb5bf',strokeWidth:1.2,strokeDasharray:'6 8'})}
-           {line(O,pos(phi,R*.80),{stroke:B,strokeWidth:1.6,strokeOpacity:.65})}
-           {line(O,C1,{strokeWidth:5})}
-           {line([O[0]-29,O[1]-32],[O[0]+29,O[1]-32],{strokeWidth:3})}
-           {line([O[0]-24,O[1]-31],O,{strokeWidth:2})}
-           {line([O[0]+24,O[1]-31],O,{strokeWidth:2})}
-           <circle cx={O[0]} cy={O[1]} r="7" fill="white" stroke={K} strokeWidth="2.5"/>
-           <circle cx={O[0]} cy={O[1]} r="2.5" fill={K}/>
-           <circle cx={C1[0]} cy={C1[1]} r="7" fill="white" stroke={K} strokeWidth="2.5"/>
-           <circle cx={C1[0]} cy={C1[1]} r="2.5" fill={K}/>
-           <circle cx={C0[0]} cy={C0[1]} r="5" fill={B}/>
-           <circle cx={C[0]} cy={C[1]} r="3" fill={K}/>
-           <circle cx={D[0]} cy={D[1]} r="3" fill={K}/>
-           {text(O[0]-51,O[1]+8,'C₂',22)}
-           {text(C1[0]+15,C1[1]+21,'C₁',22)}
-           {text(C[0]-22,C[1]+15,'C',20,{fill:'#647180'})}
-           {line(D,[D[0]+85*Math.cos(theta),D[1]-85*Math.sin(theta)],{stroke:'#89929d',strokeWidth:.8,strokeOpacity:.6})}
-           {text(D[0]+91*Math.cos(theta),D[1]-91*Math.sin(theta),'D',19,{fill:'#647180'})}
-           {line(C0,[C0[0]-90,C0[1]+64],{stroke:B,strokeWidth:1.1,strokeOpacity:.6})}
-           {text(C0[0]-163,C0[1]+86,'C₀ · m/2',21,{fill:B})}
-           {angleArc(54,phi,B)}
-           {angleArc(104,theta,'#647180')}
-           {text(pos(phi/2,75)[0],pos(phi/2,75)[1],'φ',21,{fill:B})}
-           {text(pos(theta/2,122)[0],pos(theta/2,122)[1],'θ',21,{fill:'#647180'})}
-           <path d={`M ${O[0]+66} ${O[1]-9} A 67 67 0 0 0 ${O[0]+15} ${O[1]-65}`} stroke={B} strokeWidth="1.8" fill="none" markerEnd="url(#torquearrow)"/>
-           {text(O[0]+77,O[1]-38,'M',23,{fill:B})}
-           {text(960,991,videoTime<1.5?'初始静止    ·    两自由度':'重力与恒定力偶驱动    ·    慢放 × 0.286',17,{textAnchor:'middle',fill:'#89929d'})}
-           </svg>;
-          }
-          registerRoot(()=> <Composition id="Crank" component={Diagram} width={3840} height={2160} fps={120} durationInFrames={24*120}/>);
-          VIDEO_JSX
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-      - name: Install browser
+          node-version: 22
+
+      - name: 解压源码
+        run: unzip -o franklin-remotion-source.zip
+
+      - name: 安装依赖
+        working-directory: franklin-motion
+        run: npm ci
+
+      - name: 安装渲染浏览器
+        working-directory: franklin-motion
         run: npx remotion browser ensure
-      - name: Render MP4
-        env:
-          VIDEO_FPS: ${{ inputs.frame_rate }}
-        run: npx remotion render crank.jsx Crank out/crank.mp4 --codec=h264 --crf=18 --concurrency=1 --fps="$VIDEO_FPS" --duration="$((24 * VIDEO_FPS))"
-      - name: Downloadable video
+
+      - name: 渲染视频
+        working-directory: franklin-motion
+        run: npm run render -- --concurrency=2
+
+      - name: 保存成片
         uses: actions/upload-artifact@v4
         with:
-          name: gears-crank-4k-${{ inputs.frame_rate }}fps
-          path: out/crank.mp4
-          retention-days: 3
+          name: Franklin-4K60
+          path: franklin-motion/out/film.mp4
           if-no-files-found: error
